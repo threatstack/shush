@@ -266,6 +266,7 @@ impl ShushConfig {
         }
     }
 
+    /// Get config option from ShushConfig object
     pub fn get(&self, key: &str) -> Option<&String> {
         self.0.get(key)
     }

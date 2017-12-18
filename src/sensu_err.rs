@@ -9,13 +9,15 @@ use native_tls;
 use serde_json;
 use hyper;
 
-macro_rules! sensu_from_error {
-    ( $error_name:path ) => {
-        impl From<$error_name> for SensuError {
-            fn from(e: $error_name) -> Self {
-                SensuError{ msg: e.description().to_string() }
+macro_rules! from_error {
+    ( $error_name:ident, $( $error_from:path ),* ) => {
+        $(
+            impl From<$error_from> for $error_name {
+                fn from(e: $error_from) -> Self {
+                    $error_name { msg: e.description().to_string() }
+                }
             }
-        }
+        )*
     }
 }
 
@@ -26,6 +28,7 @@ pub struct SensuError {
 }
 
 impl SensuError {
+    /// Create new Sensu error
     pub fn new(msg: &str) -> Self {
         SensuError{ msg: msg.to_string() }
     }
@@ -43,8 +46,9 @@ impl Display for SensuError {
     }
 }
 
-sensu_from_error!(hyper::Error);
-sensu_from_error!(io::Error);
-sensu_from_error!(serde_json::Error);
-sensu_from_error!(native_tls::Error);
-sensu_from_error!(hyper::error::UriError);
+from_error!(SensuError,
+            hyper::Error,
+            io::Error,
+            serde_json::Error,
+            native_tls::Error,
+            hyper::error::UriError);

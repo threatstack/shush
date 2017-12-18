@@ -40,8 +40,11 @@ impl Into<&'static str> for SensuEndpoint {
 /// Generic struct for any Sensu payload - can be used for clear or silence
 #[derive(Debug)]
 pub struct SensuPayload {
+    /// Resource (node, client, or subscription)
     pub res: Option<SensuResource>,
+    /// Sensu check
     pub chk: Option<String>,
+    /// Time until expiration
     pub expire: Option<Expire>,
 }
 

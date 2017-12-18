@@ -102,6 +102,8 @@
 //! shush -r -n INST_ID_1 -c SOME_CHECK
 //! ```
 
+#![deny(missing_docs)]
+
 extern crate futures;
 extern crate regex;
 extern crate getopts;
