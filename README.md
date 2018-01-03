@@ -4,8 +4,7 @@
 A management tool written in Rust for silencing Sensu checks
 
 # Documentation
-Reference and usage documentation is currently on Github Pages [here](https://threatstack.github.io/shush/shush/index.html)
-but will be moved to [docs.rs](https://docs.rs) for future releases.
+Reference and usage documentation is [here](https://docs.rs/crate/shush/0.1.1).
 
 # Contibuting
 For contribution guidelines, please click [here](CONTRIBUTING.md)
