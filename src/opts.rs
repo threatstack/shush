@@ -8,6 +8,7 @@ use std::env;
 use getopts;
 use regex::Regex;
 use ini::Ini;
+use nom::rest_s;
 
 #[cfg(not(test))]
 use std::process;
@@ -20,6 +21,21 @@ mod process {
         panic!(format!("Panicked with exit code {}", exit_code))
     }
 }
+
+named!(expand_vars<&str, String>, fold_many0!(
+       alt!(
+           do_parse!(pretext: take_until!("${") >>
+                     tag!("${") >>
+                     env: take_until!("}") >>
+                     tag!("}") >>
+                     (pretext.to_string() +
+                      env::var(env)
+                      .unwrap_or("".to_string()).as_str()
+                     ))
+           | map!(rest_s, String::from)
+       ), String::new(), |acc, string: String| {
+           acc + string.as_str()
+       }));
 
 /// Struct resprenting parameters passed to Shush
 #[derive(PartialEq,Debug)]
@@ -250,7 +266,8 @@ impl ShushConfig {
             ShushConfig(hm)
         };
         let home_config = format!("{}/.shush/shush.conf", env::var("HOME").unwrap_or_else(|_| {
-            println!("$HOME environment variable not found - defaulting to ~/.shush/shush.conf and this expansion may or may not work");
+            println!("$HOME environment variable not found - \
+                     defaulting to ~/.shush/shush.conf and this expansion may or may not work");
             "~/.shush/shush.conf".to_string()
         }));
 
@@ -267,8 +284,8 @@ impl ShushConfig {
     }
 
     /// Get config option from ShushConfig object
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.0.get(key)
+    pub fn get(&self, key: &str) -> Option<String> {
+        self.0.get(key).and_then(|val| expand_vars(val.as_str()).to_result().ok())
     }
 }
 
@@ -540,6 +557,15 @@ mod test {
             checks: None,
             expire: Expire::Expire(200),
         })
+    }
+
+    #[test]
+    fn getopts_f_expand() {
+        env::set_var("ENV", "dev");
+        let (_, config) = getopts(
+            vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a"].iter().map(|x| { x.to_string() }).collect()
+        );
+        assert_eq!(Some("http://your.dev.here".to_string()), config.get("api"));
     }
 
     #[test]
