@@ -6,6 +6,11 @@ description = "A management tool for silencing Sensu checks written in Rust"
 repository = "https://github.com/threatstack/shush"
 keywords = ["sensu", "monitoring"]
 license = "BSD-3-Clause"
+include = [
+  "**/*.rs",
+  "Cargo.toml",
+  "LICENSE",
+]
 
 [dependencies]
 futures = "0.1.16"
