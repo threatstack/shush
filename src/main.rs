@@ -116,6 +116,8 @@ extern crate serde_json;
 #[macro_use]
 extern crate itertools;
 extern crate ini;
+#[macro_use]
+extern crate nom;
 
 pub mod opts;
 pub mod sensu_json;
@@ -223,7 +225,7 @@ pub fn main() {
     let args: Vec<String> = env::args().collect();
     let (shush_opts, shush_cfg) = opts::getopts(args);
     let mut sensu_client = match SensuClient::new(shush_cfg.get("api")
-                                                  .cloned().unwrap_or(String::new())
+                                                  .unwrap_or(String::new())
                                                   .as_ref(), 4567) {
         Ok(c) => c,
         Err(e) => {
