@@ -2,6 +2,10 @@
 name = "shush"
 version = "0.1.0"
 authors = ["John Baublitz <john.baublitz@threatstack.com>"]
+description = "A management tool for silencing Sensu checks written in Rust"
+respository = "https://github.com/threatstack/shush"
+keywords = ["sensu", "monitoring"]
+license = "BSD-3-Clause"
 
 [dependencies]
 futures = "0.1.16"
