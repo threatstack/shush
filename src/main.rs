@@ -29,8 +29,8 @@
 //!   * `POST /silenced`
 //!   * `POST /silenced/clear`
 //!
-//! This tool gives the user with the option to provide instance IDs (AWS-specific - click [here]() for a setup guide)
-//! or to provide Sensu client IDs (applicable for all applications using Sensu).
+//! This tool gives the user with the option to provide instance IDs (AWS-specific - click [here](#aws-specific-configuration)
+//! for a setup guide) or to provide Sensu client IDs (applicable for all applications using Sensu).
 //!
 //! When providing either instance IDs or Sensu client IDs as opposed to subscriptions, validation
 //! against the Sensu server is performed to verify that the ID is registered and active.
@@ -54,7 +54,7 @@
 //! will list the requested information matched against the argument passed to the
 //! corresponding flag. This is expected to be a regex and will be compiled as such or ignored.
 //!
-//! `-r` used added to the same parameters used in silence mode will simply
+//! `-r` added to the same parameters used in silence mode will simply
 //! clear the same checks created by silence mode.
 //!
 //! ### Rust Version
@@ -77,9 +77,9 @@
 //! shush -n INST_ID_1,INST_ID2
 //! ```
 //!
-//! ## Silence check `SOME_CHECK` for 30 seconds
+//! ## Silence check `SOME_CHECK` for 1 hour and 30 minutes
 //! ```
-//! shush -c SOME_CHECK -e 30
+//! shush -c SOME_CHECK -e 1h30m
 //! ```
 //!
 //! ## Silence check `SOME_CHECK` indefinitely
@@ -97,10 +97,33 @@
 //! shush -n INST_ID_1 -c SOME_CHECK
 //! ```
 //!
+//! ## Silence check `SOME_CHECK` on client with Sensu client name `CLIENT_1`
+//! ```
+//! shush -i CLIENT_1 -c SOME_CHECK
+//! ```
+//!
+//! ## Silence check `SOME_CHECK` on client with Sensu subscription `SUB_1`
+//! ```
+//! shush -s SUB_1 -c SOME_CHECK
+//! ```
+//!
 //! ## Clear check silence for `SOME_CHECK` on client with instance ID `INST_ID_1`
 //! ```
 //! shush -r -n INST_ID_1 -c SOME_CHECK
 //! ```
+//!
+//! ## AWS-Specific Configuration
+//! To configure AWS support for shush, you will need to make modifications on the Sensu side as
+//! well. Sensu checks operate by sending a JSON payload back to the Sensu server with some
+//! predefined and some arbitrary data. To enable shush selection by AWS instance ID, add an
+//! `instance_id` key with a value equivalent to executing the following command from your AWS node:
+//!
+//! ```
+//! curl http://169.254.169.254/1.0/meta-data/instance-id
+//! ```
+//!
+//! This must be added to the Sensu _client_ object. See [here](https://sensuapp.org/docs/0.29/reference/clients.html)
+//! for more details. Once this has been done on the server side, shush will do the rest.
 
 #![deny(missing_docs)]
 
