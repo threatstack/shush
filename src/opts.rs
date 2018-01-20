@@ -6,14 +6,20 @@ use std::path::Path;
 use std::env;
 
 use getopts;
+use hyper::Method;
 use regex::Regex;
 use ini::Ini;
 use nom::rest_s;
+use teatime::ApiClient;
+use teatime::sensu::SensuClient;
+use serde_json::Value;
 
 #[cfg(not(test))]
 use std::process;
 
-use sensu_client::{SensuResource,SensuClient,SensuPayload,Expire};
+use sensu::*;
+use err::SensuError;
+use json::JsonRef;
 
 #[cfg(test)]
 mod process {
@@ -79,6 +85,36 @@ impl ShushOpts {
         }
     }
 
+    fn mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, SensuError> {
+        let clients = client.api_request(Method::Get, SensuEndpoint::Clients, None)?;
+
+        // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
+        // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
+        let mut map = HashMap::new();
+        if let Some(v) = JsonRef(&clients).get_as_vec() {
+            for item in v.iter() {
+                let iid = JsonRef(item).get_fold_as_str("instance_id")
+                    .map(|val| val.to_string());
+                let client = JsonRef(item).get_fold_as_str("name").map(|val| val.to_string());
+                if let (Some(i), Some(c)) = (iid, client) {
+                    map.insert(i, c);
+                }
+            }
+            Ok(iids.iter().fold(Vec::new(), |mut acc, v| {
+                if let Some(val) = map.remove(v) {
+                    acc.push(Value::from(val));
+                } else {
+                    println!(r#"WARNING: instance ID "{}" not associated with Sensu client ID"#, v);
+                    println!("If you recently provisioned an instance, please wait for it to register with Sensu");
+                    println!();
+                }
+                acc
+            }))
+        } else {
+            Ok(vec![])
+        }
+    }
+
     /// Takes a mutable `SensuClient` reference and performs mapping from instance ID to Sensu
     /// client ID
     pub fn iid_mapper(self, client: &mut SensuClient) -> Self {
@@ -89,8 +125,12 @@ impl ShushOpts {
                 expire,
             } => {
                 ShushOpts::Silence {
-                    resource: match client.map_iids_to_clients(v) {
-                        Ok(cli_v) => Some(ShushResources::Client(cli_v)),
+                    resource: match Self::mapper(client, v) {
+                        Ok(cli_v) => Some(ShushResources::Client(
+                            cli_v.into_iter()
+                                .filter_map(|item| item.as_str().map(|val| val.to_string()))
+                                .collect()
+                        )),
                         _ => None,
                     },
                     checks,
@@ -102,8 +142,12 @@ impl ShushOpts {
                 checks,
             } => {
                 ShushOpts::Clear {
-                    resource: match client.map_iids_to_clients(v) {
-                        Ok(cli_v) => Some(ShushResources::Client(cli_v)),
+                    resource: match Self::mapper(client, v) {
+                        Ok(cli_v) => Some(ShushResources::Client(
+                            cli_v.into_iter()
+                                .filter_map(|item| item.as_str().map(|val| val.to_string()))
+                                .collect()
+                        )),
                         _ => None,
                     },
                     checks,
