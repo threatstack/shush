@@ -134,26 +134,36 @@ extern crate tokio_core;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate native_tls;
+
+// Only need `json!()` macro for testing
+#[cfg(test)]
 #[macro_use]
 extern crate serde_json;
+#[cfg(not(test))]
+extern crate serde_json;
+
 #[macro_use]
 extern crate itertools;
 extern crate ini;
 #[macro_use]
 extern crate nom;
+extern crate teatime;
 
-pub mod opts;
-pub mod sensu_json;
-pub mod sensu_client;
-pub mod sensu_err;
+mod opts;
+mod json;
+mod sensu;
+mod err;
 
 use std::{env,process};
 
 use hyper::Method;
+use serde_json::{Value,Map};
+use teatime::{ApiClient,JsonParams};
+use teatime::sensu::SensuClient;
 
 use opts::ShushOpts;
-use sensu_client::{SensuEndpoint,SensuClient};
-use sensu_json::JsonRef;
+use sensu::SensuEndpoint;
+use json::JsonRef;
 
 fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let mut acc_string: String;
@@ -200,26 +210,22 @@ fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<Str
 }
 
 fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Option<String>) -> Option<String> {
-    match sensu_client.sensu_request(Method::Get, SensuEndpoint::Silenced, None) {
+    match sensu_client.api_request(Method::Get, SensuEndpoint::Silenced, None) {
         Err(e) => {
             println!("Couldn't gather active silences from API: {}", e);
             None
         },
-        Ok(Some(ref val)) => {
+        Ok(ref val) => {
             match JsonRef(val).get_as_vec() {
                 Some(vec) => {
                     filter_vec(vec, sub, chk)
                 },
                 _ => {
-                    println!("Invalid response from API");
+                    println!("Invalid response from API: {}", val);
                     None
                 },
             }
         },
-        _ => {
-            println!("Empty reply from API");
-            None
-        }
     }
 }
 
@@ -233,7 +239,8 @@ fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
     };
     println!("{}", mapped);
     for pl in mapped {
-        match sclient.sensu_request(method.clone(), endpoint.clone(), Some(pl)) {
+        let map: Map<String, Value> = pl.into();
+        match sclient.api_request(method.clone(), endpoint.clone(), Some(&JsonParams::from(map))) {
             Err(e) => {
                 println!("Error on silence request: {}", e);
                 process::exit(1);
@@ -249,7 +256,7 @@ pub fn main() {
     let (shush_opts, shush_cfg) = opts::getopts(args);
     let mut sensu_client = match SensuClient::new(shush_cfg.get("api")
                                                   .unwrap_or(String::new())
-                                                  .as_ref(), 4567) {
+                                                  .as_ref()) {
         Ok(c) => c,
         Err(e) => {
             println!("Error creating Sensu client: {}", e);

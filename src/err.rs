@@ -8,6 +8,7 @@ use std::error::Error;
 use native_tls;
 use serde_json;
 use hyper;
+use teatime::ClientError;
 
 macro_rules! from_error {
     ( $error_name:ident, $( $error_from:path ),* ) => {
@@ -27,13 +28,6 @@ pub struct SensuError {
     msg: String,
 }
 
-impl SensuError {
-    /// Create new Sensu error
-    pub fn new(msg: &str) -> Self {
-        SensuError{ msg: msg.to_string() }
-    }
-}
-
 impl Error for SensuError {
     fn description(&self) -> &str {
         self.msg.as_str()
@@ -51,4 +45,5 @@ from_error!(SensuError,
             io::Error,
             serde_json::Error,
             native_tls::Error,
-            hyper::error::UriError);
+            hyper::error::UriError,
+            ClientError);
