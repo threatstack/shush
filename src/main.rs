@@ -158,7 +158,7 @@ use std::{env,process};
 
 use hyper::Method;
 use serde_json::{Value,Map};
-use teatime::{ApiClient,JsonParams};
+use teatime::{ApiClient,JsonApiClient,JsonParams};
 use teatime::sensu::SensuClient;
 
 use opts::ShushOpts;
@@ -210,7 +210,8 @@ fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<Str
 }
 
 fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Option<String>) -> Option<String> {
-    match sensu_client.api_request(Method::Get, SensuEndpoint::Silenced, None) {
+    let uri = SensuEndpoint::Silenced.into();
+    match sensu_client.request_json(Method::Get, uri, None) {
         Err(e) => {
             println!("Couldn't gather active silences from API: {}", e);
             None
@@ -240,7 +241,8 @@ fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
     println!("{}", mapped);
     for pl in mapped {
         let map: Map<String, Value> = pl.into();
-        match sclient.api_request(method.clone(), endpoint.clone(), Some(&JsonParams::from(map))) {
+        let uri = endpoint.clone().into();
+        match sclient.request(method.clone(), uri, Some(JsonParams::from(map))) {
             Err(e) => {
                 println!("Error on silence request: {}", e);
                 process::exit(1);

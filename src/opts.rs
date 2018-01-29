@@ -10,7 +10,7 @@ use hyper::Method;
 use regex::Regex;
 use ini::Ini;
 use nom::rest_s;
-use teatime::ApiClient;
+use teatime::JsonApiClient;
 use teatime::sensu::SensuClient;
 use serde_json::Value;
 
@@ -86,7 +86,8 @@ impl ShushOpts {
     }
 
     fn mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, SensuError> {
-        let clients = client.api_request(Method::Get, SensuEndpoint::Clients, None)?;
+        let uri = SensuEndpoint::Clients.into();
+        let clients = client.request_json(Method::Get, uri, None)?;
 
         // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
         // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
@@ -259,7 +260,7 @@ impl Display for ShushResources {
             } else {
                 "None".to_string()
             }),
-            ShushResources::Sub(ref v) => write!(f, "Roles: {}", if v.len() > 0 {
+            ShushResources::Sub(ref v) => write!(f, "Subscriptions: {}", if v.len() > 0 {
                 v.join(", ")
             } else {
                 "None".to_string()
