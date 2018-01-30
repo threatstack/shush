@@ -3,7 +3,7 @@
 use std::env;
 use std::fmt::{self,Display};
 use serde_json::{Value,Map,Number};
-use teatime::RequestTarget;
+use hyper::Uri;
 
 /// Enum representing the endpoints in Sensu as a type that shush accesses
 #[derive(Clone)]
@@ -16,12 +16,12 @@ pub enum SensuEndpoint {
     Clients,
 }
 
-impl<'a> Into<RequestTarget<'a>> for SensuEndpoint {
-    fn into(self) -> RequestTarget<'a> {
+impl Into<Uri> for SensuEndpoint {
+    fn into(self) -> Uri {
         match self {
-            SensuEndpoint::Silenced => RequestTarget::Path("/silenced"),
-            SensuEndpoint::Clear => RequestTarget::Path("/silenced/clear"),
-            SensuEndpoint::Clients => RequestTarget::Path("/clients"),
+            SensuEndpoint::Silenced => "/silenced".parse::<Uri>().expect("Should not get here"),
+            SensuEndpoint::Clear => "/silenced/clear".parse::<Uri>().expect("Should not get here"),
+            SensuEndpoint::Clients => "/clients".parse::<Uri>().expect("Should not get here"),
         }
     }
 }
