@@ -211,7 +211,7 @@ fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<Str
 
 fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let uri = SensuEndpoint::Silenced.into();
-    match sensu_client.request_json(Method::Get, uri, None) {
+    match sensu_client.request_json::<JsonParams>(Method::Get, uri, None) {
         Err(e) => {
             println!("Couldn't gather active silences from API: {}", e);
             None

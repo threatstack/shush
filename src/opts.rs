@@ -1,25 +1,25 @@
 //! Generates Shush data structures for `sensu` module from command line flags
-use std::vec;
-use std::fmt::{self,Display};
 use std::collections::HashMap;
-use std::path::Path;
 use std::env;
+use std::fmt::{self,Display};
+use std::path::Path;
+use std::vec;
 
 use getopts;
 use hyper::Method;
-use regex::Regex;
 use ini::Ini;
 use nom::rest_s;
-use teatime::JsonApiClient;
-use teatime::sensu::SensuClient;
+use regex::Regex;
 use serde_json::Value;
+use teatime::{JsonParams,JsonApiClient};
+use teatime::sensu::SensuClient;
 
 #[cfg(not(test))]
 use std::process;
 
-use sensu::*;
 use err::SensuError;
 use json::JsonRef;
+use sensu::*;
 
 #[cfg(test)]
 mod process {
@@ -87,7 +87,7 @@ impl ShushOpts {
 
     fn mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, SensuError> {
         let uri = SensuEndpoint::Clients.into();
-        let clients = client.request_json(Method::Get, uri, None)?;
+        let clients = client.request_json::<JsonParams>(Method::Get, uri, None)?;
 
         // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
         // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
