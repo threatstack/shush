@@ -4,7 +4,7 @@
 A management tool written in Rust for silencing Sensu checks
 
 # Documentation
-Reference and usage documentation is [here](https://docs.rs/crate/shush/0.1.1).
+Reference and usage documentation is [here](https://docs.rs/crate/shush/0.1.4).
 
 # Contibuting
 For contribution guidelines, please click [here](CONTRIBUTING.md)
