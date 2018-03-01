@@ -11,7 +11,7 @@ use ini::Ini;
 use nom::rest_s;
 use regex::Regex;
 use serde_json::Value;
-use teatime::{JsonParams,JsonApiClient};
+use teatime::JsonApiClient;
 use teatime::sensu::SensuClient;
 
 #[cfg(not(test))]
@@ -87,7 +87,7 @@ impl ShushOpts {
 
     fn mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, SensuError> {
         let uri = SensuEndpoint::Clients.into();
-        let clients = client.request_json::<JsonParams>(Method::Get, uri, None)?;
+        let clients = client.request_json::<Value>(Method::Get, uri, None)?;
 
         // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
         // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
