@@ -163,15 +163,20 @@ impl Display for ShushOpts {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             ShushOpts::Silence { ref resource, ref checks, ref expire } => {
-                write!(f, "Issuing silences on the following checks on the following resources.\n\t{}\n\t{}\n\tThese silences {}",
-                       resource.as_ref().map_or("All resources".to_string(), |val| val.to_string()),
-                       checks.as_ref().map_or("All checks".to_string(), |val|
-                                              format!("Checks: {}", if val.len() > 0 {
-                                                  val.join(", ")
-                                              } else {
-                                                  "None".to_string()
-                                              })),
-                       expire.to_string())
+                let checks_string = checks.as_ref().map_or("All checks".to_string(),
+                    |val| format!("Checks: {}", if val.len() > 0 { val.join(", ") } else { "None".to_string() }));
+                match resource.as_ref() {
+                    None => write!(f, "Silencing...\n\tResources: All resources"),
+                    Some(s) => {
+                        write!(f, "Silencing...\n\t")?;
+                        match s.fmt(f) {
+                            Ok(()) => write!(f, "\n\t{}\n\tThese silences {}", checks_string, expire),
+                            Err(fmt::Error) => {
+                                "FAILED: No resources were silenced - check your input!".fmt(f)
+                            },
+                        }
+                    },
+                }
             },
             ShushOpts::Clear { ref resource, ref checks } => {
                 write!(f, "Clearing silences on the following checks on the following resources.\n\t{}\n\t{}",
@@ -253,17 +258,17 @@ impl Display for ShushResources {
             ShushResources::Node(ref v) => write!(f, "Instance IDs: {}", if v.len() > 0 {
                 v.join(", ")
             } else {
-                "None".to_string()
+                return Err(fmt::Error);
             }),
             ShushResources::Client(ref v) => write!(f, "Sensu clients: {}", if v.len() > 0 {
                 v.join(", ")
             } else {
-                "None".to_string()
+                return Err(fmt::Error);
             }),
             ShushResources::Sub(ref v) => write!(f, "Subscriptions: {}", if v.len() > 0 {
                 v.join(", ")
             } else {
-                "None".to_string()
+                return Err(fmt::Error);
             }),
         }
     }
