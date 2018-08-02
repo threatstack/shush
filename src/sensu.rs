@@ -14,6 +14,8 @@ pub enum SensuEndpoint {
     Clear,
     /// Endpoint for getting clients
     Clients,
+    /// Endpoint for getting check results
+    Results,
 }
 
 impl Into<Uri> for SensuEndpoint {
@@ -22,6 +24,7 @@ impl Into<Uri> for SensuEndpoint {
             SensuEndpoint::Silenced => "/silenced".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Clear => "/silenced/clear".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Clients => "/clients".parse::<Uri>().expect("Should not get here"),
+            SensuEndpoint::Results => "/results".parse::<Uri>().expect("Should not get here"),
         }
     }
 }

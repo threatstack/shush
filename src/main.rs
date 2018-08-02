@@ -149,10 +149,10 @@ extern crate ini;
 extern crate nom;
 extern crate teatime;
 
+mod err;
 mod opts;
 mod json;
 mod sensu;
-mod err;
 
 use std::{env,process};
 
@@ -232,11 +232,12 @@ fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Opt
 
 fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
                 endpoint: SensuEndpoint) {
-    let is_node = sopts.resource_is_node();
-    let mapped = if is_node {
-        sopts.iid_mapper(sclient)
-    } else {
-        sopts
+    let mapped = match sopts.map_and_validate(sclient) {
+        Ok(opts) => opts,
+        Err(e) => {
+            println!("{}", e);
+            process::exit(1);
+        }
     };
     println!("{}", mapped);
     for pl in mapped {

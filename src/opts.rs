@@ -1,7 +1,9 @@
 //! Generates Shush data structures for `sensu` module from command line flags
-use std::collections::HashMap;
+use std::collections::{HashSet,HashMap};
 use std::env;
+use std::error::Error;
 use std::fmt::{self,Display};
+use std::fmt::Write;
 use std::path::Path;
 use std::vec;
 
@@ -72,20 +74,7 @@ pub enum ShushOpts {
 }
 
 impl ShushOpts {
-    /// Return boolean indicating whether resource is an AWS node or not
-    pub fn resource_is_node(&self) -> bool {
-        match *self {
-            ShushOpts::Silence {
-                resource: Some(ShushResources::Node(_)), checks: _, expire: _
-            } => true,
-            ShushOpts::Clear {
-                resource: Some(ShushResources::Node(_)), checks: _,
-            } => true,
-            _ => false,
-        }
-    }
-
-    fn mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, SensuError> {
+    fn iid_mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, Box<Error>> {
         let uri = SensuEndpoint::Clients.into();
         let clients = client.request_json::<Value>(Method::Get, uri, None)?;
 
@@ -116,23 +105,59 @@ impl ShushOpts {
         }
     }
 
+    fn validate_checks(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
+        let checks_to_validate = match self {
+            ShushOpts::Silence { ref mut checks, resource: _, expire: _ } => checks,
+            ShushOpts::Clear { ref mut checks, resource: _, } => checks,
+            _ => return Ok(()),
+        };
+        let uri = SensuEndpoint::Results.into();
+        let checks_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
+        let (check_iter, check_len) = match checks_api_resp {
+            Value::Array(ref v) => (v.iter().filter_map(|json_obj| JsonRef(json_obj).get_fold_as_str("check.name")
+                                                       .map(|s| s.to_string())), v.len()),
+            _ => { return Err(Box::new(SensuError::new("Invalid JSON schema returned for check list"))); },
+        };
+        let mut set = HashSet::with_capacity(check_len);
+        set.extend(check_iter);
+
+        match checks_to_validate.as_mut() {
+            Some(v) => {
+                v.retain(|item| {
+                    let b = set.contains(item);
+                    if !b {
+                        println!("You may have misspelled a check name");
+                        println!("\tCheck {} not found - verify that you silenced what you want\n", item);
+                    }
+                    b
+                });
+            },
+            None => (),
+        };
+        Ok(())
+    }
+
     /// Takes a mutable `SensuClient` reference and performs mapping from instance ID to Sensu
     /// client ID
-    pub fn iid_mapper(self, client: &mut SensuClient) -> Self {
-        match self {
+    pub fn map_and_validate(mut self, client: &mut SensuClient) -> Result<Self, Box<Error>> {
+        self.validate_checks(client)?;
+        let opts = match self {
             ShushOpts::Silence {
                 resource: Some(ShushResources::Node(v)),
                 checks,
                 expire,
             } => {
                 ShushOpts::Silence {
-                    resource: match Self::mapper(client, v) {
+                    resource: match Self::iid_mapper(client, v) {
                         Ok(cli_v) => Some(ShushResources::Client(
                             cli_v.into_iter()
                                 .filter_map(|item| item.as_str().map(|val| val.to_string()))
                                 .collect()
                         )),
-                        _ => None,
+                        Err(e) => {
+                            println!("Error mapping instance IDs to client names: {}", e);
+                            None
+                        }
                     },
                     checks,
                     expire,
@@ -143,7 +168,7 @@ impl ShushOpts {
                 checks,
             } => {
                 ShushOpts::Clear {
-                    resource: match Self::mapper(client, v) {
+                    resource: match Self::iid_mapper(client, v) {
                         Ok(cli_v) => Some(ShushResources::Client(
                             cli_v.into_iter()
                                 .filter_map(|item| item.as_str().map(|val| val.to_string()))
@@ -154,8 +179,9 @@ impl ShushOpts {
                     checks,
                 }
             },
-            _ => unimplemented!(),
-        }
+            opts => opts,
+        };
+        Ok(opts)
     }
 }
 
@@ -163,30 +189,66 @@ impl Display for ShushOpts {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             ShushOpts::Silence { ref resource, ref checks, ref expire } => {
-                let checks_string = checks.as_ref().map_or("All checks".to_string(),
-                    |val| format!("Checks: {}", if val.len() > 0 { val.join(", ") } else { "None".to_string() }));
-                match resource.as_ref() {
-                    None => write!(f, "Silencing...\n\tResources: All resources"),
-                    Some(s) => {
-                        write!(f, "Silencing...\n\t")?;
-                        match s.fmt(f) {
-                            Ok(()) => write!(f, "\n\t{}\n\tThese silences {}", checks_string, expire),
-                            Err(fmt::Error) => {
-                                "FAILED: No resources were silenced - check your input!".fmt(f)
-                            },
-                        }
+                let resource_result = resource.as_ref().map_or(Ok(Some("All resources".to_string())), |val| {
+                    let mut string = String::new();
+                    match write!(&mut string, "{}", val) {
+                        Ok(()) => (),
+                        Err(fmt::Error) => return Err(fmt::Error),
+                    };
+                    Ok(Some(string))
+                });
+                let check_result = checks.as_ref().map_or(Ok(Some("All checks".to_string())), |val| {
+                    if val.len() > 0 {
+                        Ok(Some(format!("Checks: {}", val.join(", "))))
+                    } else {
+                        Err(fmt::Error)
+                    }
+                });
+                match (resource_result, check_result) {
+                    (Ok(Some(string1)), Ok(Some(string2))) => {
+                        write!(f, "Silencing...\n\tResources: {}\n\t{}\n\t{}\n", string1, string2, expire)
+                    },
+                    (Ok(None), Ok(Some(string2))) => {
+                        write!(f, "Silencing...\n\tResources: All resources\n\t{}\n\t{}\n", string2, expire)
+                    },
+                    (Ok(Some(string1)), Ok(None)) => {
+                        write!(f, "Silencing...\n\tResources: {}\n\tChecks: All checks\n\t{}\n", string1, expire)
+                    },
+                    (_, _) => {
+                        write!(f, "Silencing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
                     },
                 }
             },
             ShushOpts::Clear { ref resource, ref checks } => {
-                write!(f, "Clearing silences on the following checks on the following resources.\n\t{}\n\t{}",
-                       resource.as_ref().map_or("All resources".to_string(), |val| val.to_string()),
-                       checks.as_ref().map_or("All checks".to_string(), |val|
-                                              format!("Checks: {}", if val.len() > 0 {
-                                                  val.join(", ")
-                                              } else {
-                                                  "None".to_string()
-                                              })))
+                let resource_result = resource.as_ref().map_or(Ok(Some("All resources".to_string())), |val| {
+                    let mut string = String::new();
+                    match write!(&mut string, "{}", val) {
+                        Ok(()) => (),
+                        Err(fmt::Error) => return Err(fmt::Error),
+                    };
+                    Ok(Some(string))
+                });
+                let check_result = checks.as_ref().map_or(Ok(Some("All checks".to_string())), |val| {
+                    if val.len() > 0 {
+                        Ok(Some(format!("Checks: {}", val.join(", "))))
+                    } else {
+                        Err(fmt::Error)
+                    }
+                });
+                match (resource_result, check_result) {
+                    (Ok(Some(string1)), Ok(Some(string2))) => {
+                        write!(f, "Clearing...\n\tResources: {}\n\t{}\n", string1, string2)
+                    },
+                    (Ok(None), Ok(Some(string2))) => {
+                        write!(f, "Clearing...\n\tResources: All resources\n\t{}\n", string2)
+                    },
+                    (Ok(Some(string1)), Ok(None)) => {
+                        write!(f, "Clearing...\n\tResources: {}\n\tChecks: All checks\n", string1)
+                    },
+                    (_, _) => {
+                        write!(f, "Clearing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
+                    },
+                }
             },
             ShushOpts::List { sub: _, chk: _ } => {
                 Ok(())
