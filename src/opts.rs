@@ -20,7 +20,7 @@ use teatime::sensu::SensuClient;
 use std::process;
 
 use err::SensuError;
-use json::JsonRef;
+use json;
 use sensu::*;
 
 #[cfg(test)]
@@ -76,16 +76,25 @@ pub enum ShushOpts {
 impl ShushOpts {
     fn iid_mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, Box<Error>> {
         let uri = SensuEndpoint::Clients.into();
-        let clients = client.request_json::<Value>(Method::Get, uri, None)?;
+        let mut clients = client.request_json::<Value>(Method::Get, uri, None)?;
 
         // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
         // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
         let mut map = HashMap::new();
-        if let Some(v) = JsonRef(&clients).get_as_vec() {
-            for item in v.iter() {
-                let iid = JsonRef(item).get_fold_as_str("instance_id")
-                    .map(|val| val.to_string());
-                let client = JsonRef(item).get_fold_as_str("name").map(|val| val.to_string());
+        if let Value::Array(ref mut v) = clients {
+            for mut item in v.drain(..) {
+                let iid = if let Some(Value::String(string)) = item
+                        .as_object_mut().and_then(|obj| obj.remove("instance_id")) {
+                    Some(string)
+                } else {
+                    None
+                };
+                let client = if let Some(Value::String(string)) = item
+                        .as_object_mut().and_then(|obj| obj.remove("name")) {
+                    Some(string)
+                } else {
+                    None
+                };
                 if let (Some(i), Some(c)) = (iid, client) {
                     map.insert(i, c);
                 }
@@ -105,6 +114,49 @@ impl ShushOpts {
         }
     }
 
+    fn validate_resources(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
+        let resources_to_validate = match self {
+            ShushOpts::Silence { checks: _, ref mut resource, expire: _ } => resource,
+            ShushOpts::Clear { checks: _, ref mut resource, } => resource,
+            _ => return Ok(()),
+        };
+        let is_client = match resources_to_validate.as_ref().map(|r| r.is_client()) {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let uri = SensuEndpoint::Clients.into();
+        let mut clients_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
+
+        let mut set = HashSet::new();
+
+        match clients_api_resp {
+            Value::Array(ref mut v) => v.iter_mut().for_each(|ref mut json_obj| {
+                if is_client {
+                    if let Some(Value::String(string)) = json_obj.as_object_mut()
+                        .and_then(|map| map.remove("name")) {
+                        set.insert(string);
+                    }
+                } else {
+                    if let Some(Value::Array(mut vec)) = json_obj.as_object_mut()
+                            .and_then(|map| map.remove("subscriptions")) {
+                        vec.drain(..).for_each(|item| {
+                            match item {
+                                Value::String(string) => {
+                                    set.insert(string);
+                                }
+                                _ => (),
+                            }
+                        });
+                    }
+                }
+            }),
+            _ => { return Err(Box::new(SensuError::new("Invalid JSON schema returned for check list"))); },
+        };
+
+        resources_to_validate.as_mut().map(|r| r.retain(&set));
+        Ok(())
+    }
+
     fn validate_checks(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
         let checks_to_validate = match self {
             ShushOpts::Silence { ref mut checks, resource: _, expire: _ } => checks,
@@ -114,8 +166,16 @@ impl ShushOpts {
         let uri = SensuEndpoint::Results.into();
         let checks_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
         let (check_iter, check_len) = match checks_api_resp {
-            Value::Array(ref v) => (v.iter().filter_map(|json_obj| JsonRef(json_obj).get_fold_as_str("check.name")
-                                                       .map(|s| s.to_string())), v.len()),
+            Value::Array(v) => {
+                let len = v.len();
+                (v.into_iter().filter_map(|json_obj| {
+                    if let Some(Value::String(string)) = json::remove_fold(json_obj, "check.name") {
+                        Some(string)
+                    } else {
+                        None
+                    }
+                }), len)
+            },
             _ => { return Err(Box::new(SensuError::new("Invalid JSON schema returned for check list"))); },
         };
         let mut set = HashSet::with_capacity(check_len);
@@ -124,12 +184,13 @@ impl ShushOpts {
         match checks_to_validate.as_mut() {
             Some(v) => {
                 v.retain(|item| {
-                    let b = set.contains(item);
-                    if !b {
+                    if let true = set.contains(item) {
+                        true
+                    } else {
                         println!("You may have misspelled a check name");
                         println!("\tCheck {} not found - verify that you silenced what you want\n", item);
+                        false
                     }
-                    b
                 });
             },
             None => (),
@@ -140,6 +201,7 @@ impl ShushOpts {
     /// Takes a mutable `SensuClient` reference and performs mapping from instance ID to Sensu
     /// client ID
     pub fn map_and_validate(mut self, client: &mut SensuClient) -> Result<Self, Box<Error>> {
+        self.validate_resources(client)?;
         self.validate_checks(client)?;
         let opts = match self {
             ShushOpts::Silence {
@@ -314,6 +376,34 @@ pub enum ShushResources {
     Sub(Vec<String>),
 }
 
+impl ShushResources {
+    pub fn is_client(&self) -> bool {
+        match *self {
+            ShushResources::Node(_) => false,
+            ShushResources::Client(_) => true,
+            ShushResources::Sub(_) => false,
+        }
+    }
+
+    fn retain(&mut self, valid_resources: &HashSet<String>) {
+        match *self {
+            ShushResources::Node(_) => unimplemented!(),
+            ShushResources::Client(ref mut v) => v.retain(|item| {
+                valid_resources.contains(&format!("{}", item))
+            }),
+            ShushResources::Sub(ref mut v) => v.retain(|item| {
+                if let true = valid_resources.contains(item) {
+                    true
+                } else {
+                    println!("You may have misspelled a resource name");
+                    println!("\tClient or subscription {} not found - verify that you silenced what you want\n", item);
+                    false
+                }
+            }),
+        };
+    }
+}
+
 impl Display for ShushResources {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -335,7 +425,6 @@ impl Display for ShushResources {
         }
     }
 }
-
 
 impl IntoIterator for ShushResources {
     type Item = SensuResource;

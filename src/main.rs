@@ -163,16 +163,17 @@ use teatime::sensu::SensuClient;
 
 use opts::ShushOpts;
 use sensu::SensuEndpoint;
-use json::JsonRef;
 
-fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
+fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let mut acc_string: String;
-    let filter_closure = |item, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
+    let filter_closure = |item: &serde_json::Value, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
         match re {
             Ok(r) => {
-                let item_ref = JsonRef(item);
-                let sub_json = item_ref.get_fold_as_str_def(key, "");
-                r.is_match(sub_json)
+                if let Some(Value::String(string)) = item.get(key) {
+                    r.is_match(string)
+                } else {
+                    false
+                }
             },
             _ => {
                 println!("Invalid {} regex - defaulting to .*", key);
@@ -191,11 +192,14 @@ fn filter_vec(vec: &Vec<serde_json::Value>, sub: Option<String>, chk: Option<Str
     .filter(|item| {
         filter_closure(item, re_chk.as_ref(), "check")
     }) {
-        let filtered_item_ref = JsonRef(filtered_item);
-        let sub_val = filtered_item_ref.get_fold_as_str_def("subscription", "all");
-        let chk_val = filtered_item_ref.get_fold_as_str_def("check", "all");
-        let seconds = filtered_item_ref.get_fold_as_i64_def("expire", -1);
-        let on_resolve = filtered_item_ref.get_fold_as_bool_def("expire_on_resolve", false);
+        let sub_val = filtered_item.get("subscription")
+            .and_then(|json| json.as_str()).unwrap_or("all");
+        let chk_val = filtered_item.get("check")
+            .and_then(|json| json.as_str()).unwrap_or("all");
+        let seconds = filtered_item.get("expire")
+            .and_then(|json| json.as_i64()).unwrap_or(-1);
+        let on_resolve = filtered_item.get("expire_on_resolve")
+            .and_then(|json| json.as_bool()).unwrap_or(false);
         let expiration = if seconds == -1 {
             "never".to_string()
         } else if on_resolve == true {
@@ -216,9 +220,9 @@ fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Opt
             println!("Couldn't gather active silences from API: {}", e);
             None
         },
-        Ok(ref val) => {
-            match JsonRef(val).get_as_vec() {
-                Some(vec) => {
+        Ok(val) => {
+            match val {
+                Value::Array(vec) => {
                     filter_vec(vec, sub, chk)
                 },
                 _ => {
@@ -290,7 +294,7 @@ mod test {
 
     #[test]
     fn test_filter_vec() {
-        let res = filter_vec(&vec![json!({
+        let res = filter_vec(vec![json!({
             "subscription": "asldAKHll",
             "check": "9374982",
             "expire": 200
