@@ -1,17 +1,13 @@
 //! Generates Shush data structures for `sensu` module from command line flags
 use std::collections::{HashSet,HashMap};
-use std::env;
 use std::error::Error;
 use std::fmt::{self,Display};
 use std::fmt::Write;
-use std::path::Path;
 use std::vec;
 
 use getopts;
 use hyper::Method;
 use hyper::StatusCode;
-use ini::Ini;
-use nom::rest_s;
 use regex::Regex;
 use serde_json::Value;
 use teatime::{ApiClient,JsonApiClient};
@@ -20,8 +16,10 @@ use teatime::sensu::SensuClient;
 #[cfg(not(test))]
 use std::process;
 
+use config::ShushConfig;
 use err::SensuError;
 use json;
+use resources::ShushResources;
 use sensu::*;
 
 #[cfg(test)]
@@ -30,21 +28,6 @@ mod process {
         panic!(format!("Panicked with exit code {}", exit_code))
     }
 }
-
-named!(expand_vars<&str, String>, fold_many0!(
-       alt!(
-           do_parse!(pretext: take_until!("${") >>
-                     tag!("${") >>
-                     env: take_until!("}") >>
-                     tag!("}") >>
-                     (pretext.to_string() +
-                      env::var(env)
-                      .unwrap_or("".to_string()).as_str()
-                     ))
-           | map!(rest_s, String::from)
-       ), String::new(), |acc, string: String| {
-           acc + string.as_str()
-       }));
 
 /// Struct resprenting parameters passed to Shush
 #[derive(PartialEq,Debug)]
@@ -256,10 +239,14 @@ impl ShushOpts {
             } => {
                 ShushOpts::Silence {
                     resource: match Self::iid_mapper(client, v) {
-                        Ok(cli_v) => Some(ShushResources::Client(
-                            cli_v.into_iter()
-                                .filter_map(|item| item.as_str().map(|val| val.to_string()))
-                                .collect()
+                        Ok(ref mut cli_v) => Some(ShushResources::Client(
+                            cli_v.drain(..).filter_map(|item| {
+                                if let Value::String(string) = item {
+                                    Some(string)
+                                } else {
+                                    None
+                                }
+                            }).collect()
                         )),
                         Err(e) => {
                             println!("Error mapping instance IDs to client names: {}", e);
@@ -276,12 +263,19 @@ impl ShushOpts {
             } => {
                 ShushOpts::Clear {
                     resource: match Self::iid_mapper(client, v) {
-                        Ok(cli_v) => Some(ShushResources::Client(
-                            cli_v.into_iter()
-                                .filter_map(|item| item.as_str().map(|val| val.to_string()))
-                                .collect()
+                        Ok(ref mut cli_v) => Some(ShushResources::Client(
+                            cli_v.drain(..).filter_map(|item| {
+                                if let Value::String(string) = item {
+                                    Some(string)
+                                } else {
+                                    None
+                                }
+                            }).collect()
                         )),
-                        _ => None,
+                        Err(e) => {
+                            println!("Error mapping instance IDs to client names: {}", e);
+                            None
+                        }
                     },
                     checks,
                 }
@@ -407,121 +401,6 @@ impl IntoIterator for ShushOpts {
                 unimplemented!()
             },
         }
-    }
-}
-
-/// Enum representing Shush target resource (AWS node, Sensu client, or subscription)
-#[derive(PartialEq,Debug)]
-pub enum ShushResources {
-    /// AWS node
-    Node(Vec<String>),
-    /// Sensu client ID
-    Client(Vec<String>),
-    /// Sensu subscription
-    Sub(Vec<String>),
-}
-
-impl ShushResources {
-    pub fn is_client(&self) -> bool {
-        match *self {
-            ShushResources::Node(_) => false,
-            ShushResources::Client(_) => true,
-            ShushResources::Sub(_) => false,
-        }
-    }
-
-    fn retain<F>(&mut self, f: F) where F: FnMut(&String) -> bool {
-        match *self {
-            ShushResources::Node(_) => unimplemented!(),
-            ShushResources::Client(ref mut v) => v.retain(f),
-            ShushResources::Sub(ref mut v) => v.retain(f),
-        };
-    }
-}
-
-impl Display for ShushResources {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ShushResources::Node(ref v) => write!(f, "Instance IDs: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-            ShushResources::Client(ref v) => write!(f, "Sensu clients: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-            ShushResources::Sub(ref v) => write!(f, "Subscriptions: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-        }
-    }
-}
-
-impl IntoIterator for ShushResources {
-    type Item = SensuResource;
-    type IntoIter = vec::IntoIter<SensuResource>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            ShushResources::Client(vec) => vec.into_iter()
-                .map(SensuResource::Client)
-                .collect::<Vec<SensuResource>>().into_iter(),
-            ShushResources::Sub(vec) => vec.into_iter()
-                .map(SensuResource::Sub)
-                .collect::<Vec<SensuResource>>().into_iter(),
-            ShushResources::Node(_) => {
-                unimplemented!()
-            },
-        }
-    }
-}
-
-/// Struct representing shush config file
-#[derive(Debug)]
-pub struct ShushConfig(HashMap<String, String>);
-
-impl ShushConfig {
-    /// Initialize ShushConfig with path
-    pub fn new(path: Option<String>) -> Self {
-        let parse_config = |path: String| {
-            let mut hm = HashMap::new();
-            for (_, prop) in Ini::load_from_file(path.as_str()).unwrap_or_else(|e| {
-                println!("Failed to parse INI file: {}", e);
-                process::exit(1);
-            }) {
-                for (k, v) in &prop {
-                    if k == "api" {
-                        hm.insert(k.to_string(), v.to_string());
-                    }
-                }
-            }
-            ShushConfig(hm)
-        };
-        let home_config = format!("{}/.shush/shush.conf", env::var("HOME").unwrap_or_else(|_| {
-            println!("$HOME environment variable not found - \
-                     defaulting to ~/.shush/shush.conf and this expansion may or may not work");
-            "~/.shush/shush.conf".to_string()
-        }));
-
-        if path.is_some() && Path::new(path.as_ref().unwrap().as_str()).is_file() {
-            parse_config(path.unwrap())
-        } else if Path::new("/etc/shush/shush.conf").is_file() {
-            parse_config("/etc/shush/shush.conf".to_string())
-        } else if Path::new(home_config.as_str()).is_file() {
-            parse_config(home_config)
-        } else {
-            println!("No config found - exiting");
-            process::exit(1);
-        }
-    }
-
-    /// Get config option from ShushConfig object
-    pub fn get(&self, key: &str) -> Option<String> {
-        self.0.get(key).and_then(|val| expand_vars(val.as_str()).to_result().ok())
     }
 }
 
@@ -725,6 +604,7 @@ pub fn getopts(args: Vec<String>) -> (ShushOpts, ShushConfig) {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::env;
 
     #[test]
     #[should_panic]

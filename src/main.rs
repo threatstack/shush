@@ -149,9 +149,11 @@ extern crate ini;
 extern crate nom;
 extern crate teatime;
 
+mod config;
 mod err;
-mod opts;
 mod json;
+mod opts;
+mod resources;
 mod sensu;
 
 use std::{env,process};
