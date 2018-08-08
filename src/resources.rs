@@ -25,7 +25,7 @@ impl ShushResources {
 
     pub fn retain<F>(&mut self, f: F) where F: FnMut(&String) -> bool {
         match *self {
-            ShushResources::Node(_) => unimplemented!(),
+            ShushResources::Node(_) => (),
             ShushResources::Client(ref mut v) => v.retain(f),
             ShushResources::Sub(ref mut v) => v.retain(f),
         };
