@@ -7,22 +7,25 @@ use hyper::Uri;
 
 /// Enum representing the endpoints in Sensu as a type that shush accesses
 #[derive(Clone)]
-pub enum SensuEndpoint {
+pub enum SensuEndpoint<'a> {
     /// Endpoint for listing silences
     Silenced,
     /// Endpoint for clearing silences
     Clear,
     /// Endpoint for getting clients
     Clients,
+    /// Endpoint for getting a single client
+    Client(&'a String),
     /// Endpoint for getting check results
     Results,
 }
 
-impl Into<Uri> for SensuEndpoint {
+impl<'a> Into<Uri> for SensuEndpoint<'a> {
     fn into(self) -> Uri {
         match self {
             SensuEndpoint::Silenced => "/silenced".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Clear => "/silenced/clear".parse::<Uri>().expect("Should not get here"),
+            SensuEndpoint::Client(c) => format!("/clients/{}", c).parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Clients => "/clients".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Results => "/results".parse::<Uri>().expect("Should not get here"),
         }

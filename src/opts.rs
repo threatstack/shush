@@ -9,11 +9,12 @@ use std::vec;
 
 use getopts;
 use hyper::Method;
+use hyper::StatusCode;
 use ini::Ini;
 use nom::rest_s;
 use regex::Regex;
 use serde_json::Value;
-use teatime::JsonApiClient;
+use teatime::{ApiClient,JsonApiClient};
 use teatime::sensu::SensuClient;
 
 #[cfg(not(test))]
@@ -114,6 +115,52 @@ impl ShushOpts {
         }
     }
 
+    fn validate_client(client: &mut SensuClient, item: &String) -> bool {
+        let uri = SensuEndpoint::Client(item).into();
+        match client.request::<Value>(Method::Get, uri, None) {
+            Ok(resp) => {
+                if resp.status() == StatusCode::NotFound {
+                    println!("You may have misspelled a resource name");
+                    println!("\tResource {} not found - verify that you silenced what you want\n", item);
+                    return false;
+                }
+                match client.response_to_json(resp) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        println!("Failed to validate check {}: {}", item, e);
+                        false
+                    }
+                }
+            },
+            Err(e) => {
+                println!("Failed to make API request to validate resource: {}", e);
+                false
+            }
+        }
+    }
+
+    fn get_client_set(client: &mut SensuClient) -> Option<HashSet<String>> {
+        let uri = SensuEndpoint::Clients.into();
+        let resp = client.request_json::<Value>(Method::Get, uri, None);
+        let mut set = HashSet::new();
+        if let Ok(Value::Array(vec)) = resp {
+            vec.into_iter().for_each(|mut response_item| {
+                if let Some(Value::Array(sub_vec)) = response_item.as_object_mut()
+                        .and_then(|map| map.remove("subscriptions")) {
+                    sub_vec.into_iter().for_each(|sub| {
+                        if let Value::String(string) = sub {
+                            set.insert(string);
+                        }
+                    });
+                }
+            });
+        } else if let Err(e) = resp {
+            println!("{}", e);
+            return None;
+        }
+        Some(set)
+    }
+
     fn validate_resources(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
         let resources_to_validate = match self {
             ShushOpts::Silence { checks: _, ref mut resource, expire: _ } => resource,
@@ -124,36 +171,31 @@ impl ShushOpts {
             Some(b) => b,
             None => return Ok(()),
         };
-        let uri = SensuEndpoint::Clients.into();
-        let mut clients_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
-
-        let mut set = HashSet::new();
-
-        match clients_api_resp {
-            Value::Array(ref mut v) => v.iter_mut().for_each(|ref mut json_obj| {
-                if is_client {
-                    if let Some(Value::String(string)) = json_obj.as_object_mut()
-                        .and_then(|map| map.remove("name")) {
-                        set.insert(string);
-                    }
-                } else {
-                    if let Some(Value::Array(mut vec)) = json_obj.as_object_mut()
-                            .and_then(|map| map.remove("subscriptions")) {
-                        vec.drain(..).for_each(|item| {
-                            match item {
-                                Value::String(string) => {
-                                    set.insert(string);
-                                }
-                                _ => (),
-                            }
-                        });
-                    }
-                }
-            }),
-            _ => { return Err(Box::new(SensuError::new("Invalid JSON schema returned for check list"))); },
+        let set = if !is_client {
+            Self::get_client_set(client)
+        } else {
+            None
         };
 
-        resources_to_validate.as_mut().map(|r| r.retain(&set));
+        resources_to_validate.as_mut().map(|r| {
+            r.retain(|item| {
+                if is_client {
+                    Self::validate_client(client, item)
+                } else {
+                    if let Some(ref s) = set {
+                        if s.contains(item) {
+                            true
+                        } else {
+                            println!("You may have misspelled a subscription name");
+                            println!("\tSubscription {} not found - verify that you silenced what you want\n", item);
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+            });
+        });
         Ok(())
     }
 
@@ -163,6 +205,9 @@ impl ShushOpts {
             ShushOpts::Clear { ref mut checks, resource: _, } => checks,
             _ => return Ok(()),
         };
+        if checks_to_validate.is_none() {
+            return Ok(());
+        }
         let uri = SensuEndpoint::Results.into();
         let checks_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
         let (check_iter, check_len) = match checks_api_resp {
@@ -385,21 +430,11 @@ impl ShushResources {
         }
     }
 
-    fn retain(&mut self, valid_resources: &HashSet<String>) {
+    fn retain<F>(&mut self, f: F) where F: FnMut(&String) -> bool {
         match *self {
             ShushResources::Node(_) => unimplemented!(),
-            ShushResources::Client(ref mut v) => v.retain(|item| {
-                valid_resources.contains(&format!("{}", item))
-            }),
-            ShushResources::Sub(ref mut v) => v.retain(|item| {
-                if let true = valid_resources.contains(item) {
-                    true
-                } else {
-                    println!("You may have misspelled a resource name");
-                    println!("\tClient or subscription {} not found - verify that you silenced what you want\n", item);
-                    false
-                }
-            }),
+            ShushResources::Client(ref mut v) => v.retain(f),
+            ShushResources::Sub(ref mut v) => v.retain(f),
         };
     }
 }
