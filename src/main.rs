@@ -168,11 +168,13 @@ use sensu::SensuEndpoint;
 
 fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let mut acc_string: String;
-    let filter_closure = |item: &serde_json::Value, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
+    let filter_closure = |map: &serde_json::Value, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
         match re {
             Ok(r) => {
-                if let Some(Value::String(string)) = item.get(key) {
+                if let Some(Value::String(string)) = map.get(key) {
                     r.is_match(string)
+                } else if let Some(Value::Null) = map.get(key) {
+                    true
                 } else {
                     false
                 }
