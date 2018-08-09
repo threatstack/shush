@@ -107,9 +107,9 @@ pub enum Expire {
 impl Display for Expire {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Expire::NoExpiration => write!(f, "never expire\n"),
-            Expire::Expire(sz) => write!(f, "expire in {} seconds\n", sz),
-            Expire::ExpireOnResolve => write!(f, "expire on resolution of the checks\n"),
+            Expire::NoExpiration => write!(f, "never expire"),
+            Expire::Expire(sz) => write!(f, "expire in {} seconds", sz),
+            Expire::ExpireOnResolve => write!(f, "expire on resolution of the checks"),
         }
     }
 }

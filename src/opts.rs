@@ -307,13 +307,13 @@ impl Display for ShushOpts {
                 });
                 match (resource_result, check_result) {
                     (Ok(Some(string1)), Ok(Some(string2))) => {
-                        write!(f, "Silencing...\n\tResources: {}\n\t{}\n\t{}\n", string1, string2, expire)
+                        write!(f, "Silencing...\n\tResources: {}\n\t{}\n\t{}", string1, string2, expire)
                     },
                     (Ok(None), Ok(Some(string2))) => {
-                        write!(f, "Silencing...\n\tResources: All resources\n\t{}\n\t{}\n", string2, expire)
+                        write!(f, "Silencing...\n\tResources: All resources\n\t{}\n\t{}", string2, expire)
                     },
                     (Ok(Some(string1)), Ok(None)) => {
-                        write!(f, "Silencing...\n\tResources: {}\n\tChecks: All checks\n\t{}\n", string1, expire)
+                        write!(f, "Silencing...\n\tResources: {}\n\tChecks: All checks\n\t{}", string1, expire)
                     },
                     (_, _) => {
                         write!(f, "Silencing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
@@ -338,13 +338,13 @@ impl Display for ShushOpts {
                 });
                 match (resource_result, check_result) {
                     (Ok(Some(string1)), Ok(Some(string2))) => {
-                        write!(f, "Clearing...\n\tResources: {}\n\t{}\n", string1, string2)
+                        write!(f, "Clearing...\n\tResources: {}\n\t{}", string1, string2)
                     },
                     (Ok(None), Ok(Some(string2))) => {
-                        write!(f, "Clearing...\n\tResources: All resources\n\t{}\n", string2)
+                        write!(f, "Clearing...\n\tResources: All resources\n\t{}", string2)
                     },
                     (Ok(Some(string1)), Ok(None)) => {
-                        write!(f, "Clearing...\n\tResources: {}\n\tChecks: All checks\n", string1)
+                        write!(f, "Clearing...\n\tResources: {}\n\tChecks: All checks", string1)
                     },
                     (_, _) => {
                         write!(f, "Clearing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
