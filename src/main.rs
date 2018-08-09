@@ -22,10 +22,11 @@
 //! [here](https://sensuapp.org/docs/0.29/api/silenced-api.html).
 //!
 //! ### Setup and background
-//! Shush accesses three Sensu API endpoints. For Shush to be operational the following
+//! Shush accesses four Sensu API endpoints. For Shush to be operational the following
 //! Sensu endpoints must be reachable:
 //!
 //!   * `GET /clients`
+//!   * `GET /clients/[CLIENT_ID]`
 //!   * `POST /silenced`
 //!   * `POST /silenced/clear`
 //!
