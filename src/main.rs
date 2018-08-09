@@ -212,7 +212,7 @@ fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<Stri
             format!("in {} seconds", seconds)
         };
 
-        acc_string = format!("{}\tSubscription: {}\n\tCheck: {}\n\tExpires {}\n\n", acc_string, sub_val, chk_val, expiration);
+        acc_string = format!("{}\tSubscription: {}\n\tCheck: {}\n\tExpires {}", acc_string, sub_val, chk_val, expiration);
     }
     Some(acc_string)
 }
@@ -286,7 +286,7 @@ pub fn main() {
                          SensuEndpoint::Clear)
         },
         ShushOpts::List { sub, chk } => {
-            print!("{}", list_formatting(&mut sensu_client, sub, chk)
+            println!("{}", list_formatting(&mut sensu_client, sub, chk)
                      .unwrap_or("".to_string()));
         },
     }
@@ -315,7 +315,7 @@ mod test {
         })], Some("^[a-zA-Z]+$".to_string()), Some("^[0-9]+$".to_string()));
         assert_eq!(
             res,
-            Some("Active silences:\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds\n\n".to_string())
+            Some("Active silences:\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds".to_string())
         );
     }
 }
