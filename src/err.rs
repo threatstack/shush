@@ -4,26 +4,51 @@ use std::fmt;
 use std::fmt::{Formatter,Display};
 use std::error::Error;
 
+use hyper;
+
 /// Error type for passing error messages to display from the CLI
 #[derive(Debug)]
-pub struct SensuError {
-    msg: String,
+pub enum SensuError {
+    NotFound,
+    Message(String),
 }
 
 impl SensuError {
-    pub fn new(msg: &'static str) -> Self {
-        SensuError { msg: msg.to_string() }
+    pub fn new(msg: &str) -> Self {
+        SensuError::Message(msg.to_string())
+    }
+
+    pub fn not_found() -> Self {
+        SensuError::NotFound
+    }
+
+    pub fn is_404(&self) -> bool {
+        if let SensuError::Message(_) = self {
+            false
+        } else {
+            true
+        }
+    }
+}
+
+impl From<hyper::Error> for SensuError {
+    fn from(e: hyper::Error) -> Self {
+        SensuError::new(e.description())
     }
 }
 
 impl Error for SensuError {
     fn description(&self) -> &str {
-        self.msg.as_str()
+        if let SensuError::Message(string) = self {
+            string.as_ref()
+        } else {
+            "404 Not found"
+        }
     }
 }
 
 impl Display for SensuError {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{}", self.msg)
+        write!(f, "{}", self.description())
     }
 }

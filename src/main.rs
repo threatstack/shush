@@ -131,10 +131,10 @@
 extern crate futures;
 extern crate regex;
 extern crate getopts;
-extern crate tokio_core;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate native_tls;
+extern crate tokio;
 
 // Only need `json!()` macro for testing
 #[cfg(test)]
@@ -148,7 +148,6 @@ extern crate itertools;
 extern crate ini;
 #[macro_use]
 extern crate nom;
-extern crate teatime;
 
 mod config;
 mod err;
@@ -161,11 +160,9 @@ use std::{env,process};
 
 use hyper::Method;
 use serde_json::{Value,Map};
-use teatime::{ApiClient,JsonApiClient};
-use teatime::sensu::SensuClient;
 
 use opts::ShushOpts;
-use sensu::SensuEndpoint;
+use sensu::{SensuClient,SensuEndpoint};
 
 fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let mut acc_string: String;
@@ -220,21 +217,15 @@ fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<Stri
 
 fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Option<String>) -> Option<String> {
     let uri = SensuEndpoint::Silenced.into();
-    match sensu_client.request_json::<Value>(Method::Get, uri, None) {
+    match sensu_client.request::<String>(Method::GET, uri, None) {
         Err(e) => {
             println!("Couldn't gather active silences from API: {}", e);
             None
         },
-        Ok(val) => {
-            match val {
-                Value::Array(vec) => {
-                    filter_vec(vec, sub, chk)
-                },
-                _ => {
-                    println!("Invalid response from API: {}", val);
-                    None
-                },
-            }
+        Ok(Some(Value::Array(vec))) => filter_vec(vec, sub, chk),
+        _ => {
+            println!("Invalid response from API");
+            None
         },
     }
 }
@@ -266,24 +257,21 @@ fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
 pub fn main() {
     let args: Vec<String> = env::args().collect();
     let (shush_opts, shush_cfg) = opts::getopts(args);
-    let mut sensu_client = match SensuClient::new(shush_cfg.get("api")
-                                                  .unwrap_or(String::new())
-                                                  .as_ref()) {
+    let mut sensu_client = match SensuClient::new(shush_cfg.get("api").unwrap_or(String::new())) {
         Ok(c) => c,
         Err(e) => {
-            println!("Error creating Sensu client: {}", e);
+            println!("{}", e);
             process::exit(1);
         }
     };
 
-
     match shush_opts {
         ShushOpts::Silence { resource: _, checks: _, expire: _ } => {
-            request_iter(shush_opts, &mut sensu_client, Method::Post,
+            request_iter(shush_opts, &mut sensu_client, Method::POST,
                          SensuEndpoint::Silenced)
         }
         ShushOpts::Clear { resource: _, checks: _ } => {
-            request_iter(shush_opts, &mut sensu_client, Method::Post,
+            request_iter(shush_opts, &mut sensu_client, Method::POST,
                          SensuEndpoint::Clear)
         },
         ShushOpts::List { sub, chk } => {

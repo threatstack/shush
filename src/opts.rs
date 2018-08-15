@@ -7,11 +7,8 @@ use std::vec;
 
 use getopts;
 use hyper::Method;
-use hyper::StatusCode;
 use regex::Regex;
 use serde_json::Value;
-use teatime::{ApiClient,JsonApiClient};
-use teatime::sensu::SensuClient;
 
 #[cfg(not(test))]
 use std::process;
@@ -60,12 +57,12 @@ pub enum ShushOpts {
 impl ShushOpts {
     fn iid_mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, Box<Error>> {
         let uri = SensuEndpoint::Clients.into();
-        let mut clients = client.request_json::<Value>(Method::Get, uri, None)?;
+        let mut clients = client.request::<String>(Method::GET, uri, None)?;
 
         // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
         // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
         let mut map = HashMap::new();
-        if let Value::Array(ref mut v) = clients {
+        if let Some(Value::Array(ref mut v)) = clients {
             for mut item in v.drain(..) {
                 let iid = if let Some(Value::String(string)) = item
                         .as_object_mut().and_then(|obj| obj.remove("instance_id")) {
@@ -100,23 +97,19 @@ impl ShushOpts {
 
     fn validate_client(client: &mut SensuClient, item: &String) -> bool {
         let uri = SensuEndpoint::Client(item).into();
-        match client.request::<Value>(Method::Get, uri, None) {
-            Ok(resp) => {
-                if resp.status() == StatusCode::NotFound {
+        match client.request::<String>(Method::GET, uri, None) {
+            Ok(Some(_)) => true,
+            Err(ref e) => {
+                if e.is_404() {
                     println!("You may have misspelled a resource name");
                     println!("\tResource {} not found - verify that you silenced what you want\n", item);
-                    return false;
+                } else {
+                    println!("Failed to make API request to validate resource: {}", e);
                 }
-                match client.response_to_json(resp) {
-                    Ok(_) => true,
-                    Err(e) => {
-                        println!("Failed to validate check {}: {}", item, e);
-                        false
-                    }
-                }
+                false
             },
-            Err(e) => {
-                println!("Failed to make API request to validate resource: {}", e);
+            _ => {
+                println!("Invalid JSON returned from API");
                 false
             }
         }
@@ -124,9 +117,9 @@ impl ShushOpts {
 
     fn get_client_set(client: &mut SensuClient) -> Option<HashSet<String>> {
         let uri = SensuEndpoint::Clients.into();
-        let resp = client.request_json::<Value>(Method::Get, uri, None);
+        let resp = client.request::<String>(Method::GET, uri, None);
         let mut set = HashSet::new();
-        if let Ok(Value::Array(vec)) = resp {
+        if let Ok(Some(Value::Array(vec))) = resp {
             vec.into_iter().for_each(|mut response_item| {
                 if let Some(Value::Array(sub_vec)) = response_item.as_object_mut()
                         .and_then(|map| map.remove("subscriptions")) {
@@ -139,6 +132,9 @@ impl ShushOpts {
             });
         } else if let Err(e) = resp {
             println!("{}", e);
+            return None;
+        } else {
+            println!("Invalid JSON returned from API");
             return None;
         }
         Some(set)
@@ -192,9 +188,9 @@ impl ShushOpts {
             return Ok(());
         }
         let uri = SensuEndpoint::Results.into();
-        let checks_api_resp = client.request_json::<Value>(Method::Get, uri, None)?;
+        let checks_api_resp = client.request::<String>(Method::GET, uri, None)?;
         let (check_iter, check_len) = match checks_api_resp {
-            Value::Array(v) => {
+            Some(Value::Array(v)) => {
                 let len = v.len();
                 (v.into_iter().filter_map(|json_obj| {
                     if let Some(Value::String(string)) = json::remove_fold(json_obj, "check.name") {
@@ -204,7 +200,7 @@ impl ShushOpts {
                     }
                 }), len)
             },
-            _ => { return Err(Box::new(SensuError::new("Invalid JSON schema returned for check list"))); },
+            _ => { return Err(Box::new(SensuError::new("Invalid JSON returned for check list"))); },
         };
         let mut set = HashSet::with_capacity(check_len);
         set.extend(check_iter);

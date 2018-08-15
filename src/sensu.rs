@@ -1,9 +1,62 @@
 //! Sensu API related request and response-parsing logic
 
 use std::env;
+use std::error::Error;
 use std::fmt::{self,Display};
-use serde_json::{Value,Map,Number};
-use hyper::Uri;
+
+use serde_json::{self,Value,Map,Number};
+use hyper::{Body,Client,Method,Request,StatusCode,Uri};
+use hyper::client::HttpConnector;
+use hyper::header::{self,HeaderValue};
+use hyper::rt::{Future,Stream};
+use tokio::runtime::Runtime;
+
+use err::SensuError;
+
+pub struct SensuClient(Client<HttpConnector>, Runtime, Uri);
+
+impl SensuClient {
+    pub fn new(base_url: String) -> Result<Self, Box<Error>> {
+        let runtime = Runtime::new()?;
+        Ok(SensuClient(Client::builder().build(HttpConnector::new_with_handle(4, runtime.reactor().clone())), runtime, base_url.parse::<Uri>()?))
+    }
+
+    pub fn request<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
+            -> Result<Option<Value>, SensuError> where B: ToString {
+        let mut full_uri = uri;
+        if full_uri.authority_part().is_none() {
+            let mut parts = full_uri.into_parts();
+            let base_uri = self.2.clone().into_parts();
+            parts.scheme = base_uri.scheme;
+            parts.authority = base_uri.authority;
+            full_uri = Uri::from_parts(parts).map_err(|e| SensuError::new(e.description()))?;
+        }
+
+        let mut builder = Request::builder();
+        builder.method(method).uri(full_uri);
+        let req = if let Some(b) = body {
+            builder.header(header::CONTENT_LENGTH, b.to_string().len())
+            .header(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .body(Body::from(b.to_string()))
+            .map_err(|e| SensuError::new(e.description()))?
+        } else {
+            builder.body(Body::empty()).map_err(|e| SensuError::new(e.description()))?
+        };
+
+        let resp = self.0.request(req).map_err(|e| SensuError::new(e.description()))
+            .and_then(|resp| {
+                if resp.status() == StatusCode::NOT_FOUND {
+                    return Err(SensuError::not_found());
+                }
+            Ok(resp)
+        });
+        let response = self.1.block_on(resp)?;
+        let json = response.into_body().concat2().and_then(|chunk| {
+            Ok(serde_json::from_slice::<Value>(&chunk).ok())
+        });
+        Ok(self.1.block_on(json)?)
+    }
+}
 
 /// Enum representing the endpoints in Sensu as a type that shush accesses
 #[derive(Clone)]
