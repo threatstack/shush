@@ -165,7 +165,6 @@ use opts::ShushOpts;
 use sensu::{SensuClient,SensuEndpoint};
 
 fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
-    let mut acc_string: String;
     let filter_closure = |map: &serde_json::Value, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
         match re {
             Ok(r) => {
@@ -187,13 +186,12 @@ fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<Stri
         .size_limit(8192).dfa_size_limit(8192).build();
     let re_chk = regex::RegexBuilder::new(chk.unwrap_or(".*".to_string()).as_str())
         .size_limit(8192).dfa_size_limit(8192).build();
-    acc_string = "Active silences:\n".to_string();
-    for filtered_item in vec.iter().filter(|item| {
+    let mut acc_string = "Active silences:".to_string();
+    vec.iter().filter(|item| {
         filter_closure(item, re_sub.as_ref(), "subscription")
     })
-    .filter(|item| {
-        filter_closure(item, re_chk.as_ref(), "check")
-    }) {
+    .filter(|item| filter_closure(item, re_chk.as_ref(), "check"))
+    .fold(&mut acc_string, |acc, filtered_item| {
         let sub_val = filtered_item.get("subscription")
             .and_then(|json| json.as_str()).unwrap_or("all");
         let chk_val = filtered_item.get("check")
@@ -209,9 +207,10 @@ fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<Stri
         } else {
             format!("in {} seconds", seconds)
         };
+        acc.push_str(format!("\n\n\tSubscription: {}\n\tCheck: {}\n\tExpires {}", sub_val, chk_val, expiration).as_str());
+        acc
+    });
 
-        acc_string = format!("{}\tSubscription: {}\n\tCheck: {}\n\tExpires {}", acc_string, sub_val, chk_val, expiration);
-    }
     Some(acc_string)
 }
 
@@ -245,7 +244,7 @@ fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
         let uri = endpoint.clone().into();
         match sclient.request(method.clone(), uri, Some(Value::from(map))) {
             Err(e) => {
-                println!("Error on silence request: {}", e);
+                println!("Error on POST request: {}", e);
                 process::exit(1);
             },
             _ => (),
@@ -304,7 +303,7 @@ mod test {
         })], Some("^[a-zA-Z]+$".to_string()), Some("^[0-9]+$".to_string()));
         assert_eq!(
             res,
-            Some("Active silences:\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds".to_string())
+            Some("Active silences:\n\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds".to_string())
         );
     }
 }
