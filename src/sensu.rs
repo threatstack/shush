@@ -18,7 +18,7 @@ pub struct SensuClient(Client<HttpConnector>, Runtime, Uri);
 impl SensuClient {
     pub fn new(base_url: String) -> Result<Self, Box<Error>> {
         let runtime = Runtime::new()?;
-        Ok(SensuClient(Client::builder().build(HttpConnector::new_with_handle(4, runtime.reactor().clone())), runtime, base_url.parse::<Uri>()?))
+        Ok(SensuClient(Client::builder().build(HttpConnector::new(4)), runtime, base_url.parse::<Uri>()?))
     }
 
     pub fn request<B>(&mut self, method: Method, uri: Uri, body: Option<B>)

@@ -1,7 +1,7 @@
 [package]
 name = "shush"
-version = "0.2.2"
-authors = ["John Baublitz <john.baublitz@threatstack.com>"]
+version = "0.2.3"
+authors = ["John Baublitz <john.m.baublitz@gmail.com>"]
 description = "A management tool for silencing Sensu checks written in Rust"
 repository = "https://github.com/threatstack/shush"
 keywords = ["sensu", "monitoring"]
