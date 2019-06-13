@@ -17,9 +17,9 @@ use opts::{ClearOpts,ListOpts,SilenceOpts};
 pub struct SensuClient(Client<HttpConnector>, Runtime, Uri);
 
 impl SensuClient {
-    pub fn new(base_url: String) -> Result<Self, Box<Error>> {
-        let runtime = Runtime::new()?;
-        Ok(SensuClient(Client::builder().build(HttpConnector::new(4)), runtime, base_url.parse::<Uri>()?))
+    pub fn new(base_url: String) -> Result<Self, Box<dyn Error>> {
+        Ok(SensuClient(Client::builder().build(HttpConnector::new(4)), Runtime::new()?,
+                       base_url.parse::<Uri>()?))
     }
 
     pub fn request<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
@@ -44,29 +44,37 @@ impl SensuClient {
             builder.body(Body::empty()).map_err(|e| SensuError::new(e.description()))?
         };
 
-        let resp = self.0.request(req).map_err(|e| SensuError::new(e.description()))
-            .and_then(|resp| {
-                if resp.status() == StatusCode::NOT_FOUND {
-                    return Err(SensuError::not_found());
-                }
+        self.1.block_on(self.0.request(req).map_err(|e| {
+            SensuError::from(e)
+        }).and_then(|resp| {
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Err(SensuError::not_found());
+            }
             Ok(resp)
-        });
-        let response = self.1.block_on(resp)?;
-        let json = response.into_body().concat2().and_then(|chunk| {
-            Ok(serde_json::from_slice::<Value>(&chunk).ok())
-        });
-        Ok(self.1.block_on(json)?)
+        }).and_then(|resp| {
+            resp.into_body().concat2().map_err(|e| SensuError::from(e))
+        }).and_then(|chunk| {
+            serde_json::from_slice::<Value>(&chunk).map_err(|e| {
+                println!("Response: {}", match std::str::from_utf8(&chunk).map_err(|e| {
+                    SensuError::new(&e.to_string())
+                }) {
+                    Ok(j) => j,
+                    Err(e) => return e,
+                });
+                SensuError::new(&e.to_string())
+            }).map(Some)
+        }))
     }
 
-    pub fn silence(&mut self, s: &SilenceOpts) -> Result<(), Box<Error>> {
+    pub fn silence(&mut self, s: &SilenceOpts) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub fn clear(&mut self, s: &ClearOpts) -> Result<(), Box<Error>> {
+    pub fn clear(&mut self, s: &ClearOpts) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub fn list(&mut self, s: &ListOpts) -> Result<(), Box<Error>> {
+    pub fn list(&mut self, s: &ListOpts) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 }
