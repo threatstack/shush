@@ -12,6 +12,7 @@ use hyper::rt::{Future,Stream};
 use tokio::runtime::Runtime;
 
 use err::SensuError;
+use opts::{ClearOpts,ListOpts,SilenceOpts};
 
 pub struct SensuClient(Client<HttpConnector>, Runtime, Uri);
 
@@ -55,6 +56,18 @@ impl SensuClient {
             Ok(serde_json::from_slice::<Value>(&chunk).ok())
         });
         Ok(self.1.block_on(json)?)
+    }
+
+    pub fn silence(&mut self, s: &SilenceOpts) -> Result<(), Box<Error>> {
+        Ok(())
+    }
+
+    pub fn clear(&mut self, s: &ClearOpts) -> Result<(), Box<Error>> {
+        Ok(())
+    }
+
+    pub fn list(&mut self, s: &ListOpts) -> Result<(), Box<Error>> {
+        Ok(())
     }
 }
 
@@ -117,10 +130,15 @@ impl Into<Map<String, Value>> for SensuPayload {
         }
 
         // Handle silence duration
-        if let Some(Expire::ExpireOnResolve) = self.expire {
-            payload.insert("expire_on_resolve".to_string(), Value::Bool(true));
-        } else if let Some(Expire::Expire(num)) = self.expire {
+        if let Some(Expire::NoExpiration(eor)) = self.expire {
+            if eor {
+                payload.insert("expire_on_resolve".to_string(), Value::Bool(true));
+            }
+        } else if let Some(Expire::Expire(num, eor)) = self.expire {
             payload.insert("expire".to_string(), Value::Number(Number::from(num)));
+            if eor {
+                payload.insert("expire_on_resolve".to_string(), Value::Bool(true));
+            }
         }
 
         // Convert to `Map` for HTTP body
@@ -149,20 +167,19 @@ impl Into<String> for SensuResource {
 /// Enum for all types of duration of silences - only used in silences
 #[derive(Debug,PartialEq,Clone)]
 pub enum Expire {
-    /// Never expires
-    NoExpiration,
-    /// Expires in `usize` seconds
-    Expire(usize),
-    /// Expires when check resolves
-    ExpireOnResolve,
+    /// No time expiration with optional expire on resolve
+    NoExpiration(bool),
+    /// Expires in `usize` seconds with optional expire on resolve
+    Expire(usize, bool),
 }
 
 impl Display for Expire {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Expire::NoExpiration => write!(f, "never expire"),
-            Expire::Expire(sz) => write!(f, "expire in {} seconds", sz),
-            Expire::ExpireOnResolve => write!(f, "expire on resolution of the checks"),
+            Expire::NoExpiration(true) => write!(f, "not expire until resolution"),
+            Expire::NoExpiration(false) => write!(f, "never expire"),
+            Expire::Expire(sz, true) => write!(f, "expire in {} seconds or on resolution", sz),
+            Expire::Expire(sz, false) => write!(f, "expire in {} seconds", sz),
         }
     }
 }

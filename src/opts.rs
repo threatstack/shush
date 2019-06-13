@@ -1,718 +1,246 @@
 //! Generates Shush data structures for `sensu` module from command line flags
-use std::collections::{HashSet,HashMap};
-use std::error::Error;
-use std::fmt::{self,Display};
-use std::fmt::Write;
-use std::vec;
 
-use getopts;
-use hyper::Method;
-use regex::Regex;
-use serde_json::Value;
-
-#[cfg(not(test))]
 use std::process;
 
+use clap::{App,Arg};
+use regex::Regex;
+
 use config::ShushConfig;
-use err::SensuError;
-use json;
-use resources::ShushResources;
-use sensu::*;
+use resources::{ShushResources,ShushResourceType};
+use sensu::Expire;
 
-#[cfg(test)]
-mod process {
-    pub fn exit(exit_code: u32) -> ! {
-        panic!(format!("Panicked with exit code {}", exit_code))
-    }
+pub struct SilenceOpts {
+    resource: Option<ShushResources>,
+    checks: Option<Vec<String>>,
+    expire: Expire,
 }
 
-/// Struct resprenting parameters passed to Shush
-#[derive(PartialEq,Debug)]
+pub struct ClearOpts {
+    resource: Option<ShushResources>,
+    checks: Option<Vec<String>>,
+}
+
+pub struct ListOpts {
+    sub: Option<String>,
+    chk: Option<String>,
+}
+
 pub enum ShushOpts {
-    /// Silence action
-    Silence {
-        /// Resource to silence (AWS node, client or subscription)
-        resource: Option<ShushResources>,
-        /// Check to silence
-        checks: Option<Vec<String>>,
-        /// Expiration
-        expire: Expire
-    },
-    /// Clear action
-    Clear {
-        /// Resource for which to clear silence (AWS node, client or subscription)
-        resource: Option<ShushResources>,
-        /// Check for which to clear silence
-        checks: Option<Vec<String>>,
-    },
-    /// List action
-    List {
-        /// Regex string for subscription or client list filtering
-        sub: Option<String>,
-        /// Regex string for check list filtering
-        chk: Option<String>,
-    }
+    Silence(SilenceOpts),
+    Clear(ClearOpts),
+    List(ListOpts),
 }
 
-impl ShushOpts {
-    fn iid_mapper(client: &mut SensuClient, iids: Vec<String>) -> Result<Vec<Value>, Box<Error>> {
-        let uri = SensuEndpoint::Clients.into();
-        let mut clients = client.request::<String>(Method::GET, uri, None)?;
-
-        // Generate map from array of JSON objects - from [{"name": CLIENT_ID, "instance_id": IID},..] to
-        // {IID1: CLIENT_ID1, IID2: CLIENT_ID2,...}
-        let mut map = HashMap::new();
-        if let Some(Value::Array(ref mut v)) = clients {
-            for mut item in v.drain(..) {
-                let iid = if let Some(Value::String(string)) = item
-                        .as_object_mut().and_then(|obj| obj.remove("instance_id")) {
-                    Some(string)
-                } else {
-                    None
-                };
-                let client = if let Some(Value::String(string)) = item
-                        .as_object_mut().and_then(|obj| obj.remove("name")) {
-                    Some(string)
-                } else {
-                    None
-                };
-                if let (Some(i), Some(c)) = (iid, client) {
-                    map.insert(i, c);
-                }
-            }
-            Ok(iids.iter().fold(Vec::new(), |mut acc, v| {
-                if let Some(val) = map.remove(v) {
-                    acc.push(Value::from(val));
-                } else {
-                    println!(r#"WARNING: instance ID "{}" not associated with Sensu client ID"#, v);
-                    println!("If you recently provisioned an instance, please wait for it to register with Sensu");
-                    println!();
-                }
-                acc
-            }))
-        } else {
-            Ok(vec![])
-        }
+pub fn get_expiration(expire: String, expire_on_resolve: bool) -> Expire {
+    if expire.as_str() == "none" {
+        return Expire::NoExpiration(expire_on_resolve);
     }
-
-    fn validate_client(client: &mut SensuClient, item: &String) -> bool {
-        let uri = SensuEndpoint::Client(item).into();
-        match client.request::<String>(Method::GET, uri, None) {
-            Ok(Some(_)) => true,
-            Err(ref e) => {
-                if e.is_404() {
-                    println!("You may have misspelled a resource name");
-                    println!("\tResource {} not found - verify that you silenced what you want\n", item);
-                } else {
-                    println!("Failed to make API request to validate resource: {}", e);
-                }
-                false
-            },
-            _ => {
-                println!("Invalid JSON returned from API");
-                false
-            }
-        }
-    }
-
-    fn get_client_set(client: &mut SensuClient) -> Option<HashSet<String>> {
-        let uri = SensuEndpoint::Clients.into();
-        let resp = client.request::<String>(Method::GET, uri, None);
-        let mut set = HashSet::new();
-        if let Ok(Some(Value::Array(vec))) = resp {
-            vec.into_iter().for_each(|mut response_item| {
-                if let Some(Value::Array(sub_vec)) = response_item.as_object_mut()
-                        .and_then(|map| map.remove("subscriptions")) {
-                    sub_vec.into_iter().for_each(|sub| {
-                        if let Value::String(string) = sub {
-                            set.insert(string);
-                        }
-                    });
-                }
-            });
-        } else if let Err(e) = resp {
-            println!("{}", e);
-            return None;
-        } else {
-            println!("Invalid JSON returned from API");
-            return None;
-        }
-        Some(set)
-    }
-
-    fn validate_resources(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
-        let resources_to_validate = match self {
-            ShushOpts::Silence { checks: _, ref mut resource, expire: _ } => resource,
-            ShushOpts::Clear { checks: _, ref mut resource, } => resource,
-            _ => return Ok(()),
-        };
-        let is_client = match resources_to_validate.as_ref().map(|r| r.is_client()) {
-            Some(b) => b,
-            None => return Ok(()),
-        };
-        let set = if !is_client {
-            Self::get_client_set(client)
-        } else {
-            None
-        };
-
-        resources_to_validate.as_mut().map(|r| {
-            r.retain(|item| {
-                if is_client {
-                    Self::validate_client(client, item)
-                } else {
-                    if let Some(ref s) = set {
-                        if s.contains(item) {
-                            true
-                        } else {
-                            println!("You may have misspelled a subscription name");
-                            println!("\tSubscription {} not found - verify that you silenced what you want\n", item);
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-            });
-        });
-        Ok(())
-    }
-
-    fn validate_checks(&mut self, client: &mut SensuClient) -> Result<(), Box<Error>> {
-        let checks_to_validate = match self {
-            ShushOpts::Silence { ref mut checks, resource: _, expire: _ } => checks,
-            ShushOpts::Clear { ref mut checks, resource: _, } => checks,
-            _ => return Ok(()),
-        };
-        if checks_to_validate.is_none() {
-            return Ok(());
-        }
-        let uri = SensuEndpoint::Results.into();
-        let checks_api_resp = client.request::<String>(Method::GET, uri, None)?;
-        let (check_iter, check_len) = match checks_api_resp {
-            Some(Value::Array(v)) => {
-                let len = v.len();
-                (v.into_iter().filter_map(|json_obj| {
-                    if let Some(Value::String(string)) = json::remove_fold(json_obj, "check.name") {
-                        Some(string)
-                    } else {
-                        None
-                    }
-                }), len)
-            },
-            _ => { return Err(Box::new(SensuError::new("Invalid JSON returned for check list"))); },
-        };
-        let mut set = HashSet::with_capacity(check_len);
-        set.extend(check_iter);
-
-        match checks_to_validate.as_mut() {
-            Some(v) => {
-                v.retain(|item| {
-                    if let true = set.contains(item) {
-                        true
-                    } else {
-                        println!("You may have misspelled a check name");
-                        println!("\tCheck {} not found - verify that you silenced what you want\n", item);
-                        false
-                    }
-                });
-            },
-            None => (),
-        };
-        Ok(())
-    }
-
-    /// Takes a mutable `SensuClient` reference and performs mapping from instance ID to Sensu
-    /// client ID
-    pub fn map_and_validate(mut self, client: &mut SensuClient) -> Result<Self, Box<Error>> {
-        self.validate_resources(client)?;
-        self.validate_checks(client)?;
-        let opts = match self {
-            ShushOpts::Silence {
-                resource: Some(ShushResources::Node(v)),
-                checks,
-                expire,
-            } => {
-                ShushOpts::Silence {
-                    resource: match Self::iid_mapper(client, v) {
-                        Ok(ref mut cli_v) => Some(ShushResources::Client(
-                            cli_v.drain(..).filter_map(|item| {
-                                if let Value::String(string) = item {
-                                    Some(string)
-                                } else {
-                                    None
-                                }
-                            }).collect()
-                        )),
-                        Err(e) => {
-                            println!("Error mapping instance IDs to client names: {}", e);
-                            None
-                        }
-                    },
-                    checks,
-                    expire,
-                }
-            },
-            ShushOpts::Clear {
-                resource: Some(ShushResources::Node(v)),
-                checks,
-            } => {
-                ShushOpts::Clear {
-                    resource: match Self::iid_mapper(client, v) {
-                        Ok(ref mut cli_v) => Some(ShushResources::Client(
-                            cli_v.drain(..).filter_map(|item| {
-                                if let Value::String(string) = item {
-                                    Some(string)
-                                } else {
-                                    None
-                                }
-                            }).collect()
-                        )),
-                        Err(e) => {
-                            println!("Error mapping instance IDs to client names: {}", e);
-                            None
-                        }
-                    },
-                    checks,
-                }
-            },
-            opts => opts,
-        };
-        Ok(opts)
-    }
-}
-
-impl Display for ShushOpts {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ShushOpts::Silence { ref resource, ref checks, ref expire } => {
-                let resource_result = resource.as_ref().map_or(Ok(Some("All resources".to_string())), |val| {
-                    let mut string = String::new();
-                    match write!(&mut string, "{}", val) {
-                        Ok(()) => (),
-                        Err(fmt::Error) => return Err(fmt::Error),
-                    };
-                    Ok(Some(string))
-                });
-                let check_result = checks.as_ref().map_or(Ok(Some("All checks".to_string())), |val| {
-                    if val.len() > 0 {
-                        Ok(Some(format!("Checks: {}", val.join(", "))))
-                    } else {
-                        Err(fmt::Error)
-                    }
-                });
-                match (resource_result, check_result) {
-                    (Ok(Some(string1)), Ok(Some(string2))) => {
-                        write!(f, "Silencing...\n\tResources: {}\n\t{}\n\t{}", string1, string2, expire)
-                    },
-                    (Ok(None), Ok(Some(string2))) => {
-                        write!(f, "Silencing...\n\tResources: All resources\n\t{}\n\t{}", string2, expire)
-                    },
-                    (Ok(Some(string1)), Ok(None)) => {
-                        write!(f, "Silencing...\n\tResources: {}\n\tChecks: All checks\n\t{}", string1, expire)
-                    },
-                    (_, _) => {
-                        write!(f, "Silencing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
-                    },
-                }
-            },
-            ShushOpts::Clear { ref resource, ref checks } => {
-                let resource_result = resource.as_ref().map_or(Ok(Some("All resources".to_string())), |val| {
-                    let mut string = String::new();
-                    match write!(&mut string, "{}", val) {
-                        Ok(()) => (),
-                        Err(fmt::Error) => return Err(fmt::Error),
-                    };
-                    Ok(Some(string))
-                });
-                let check_result = checks.as_ref().map_or(Ok(Some("All checks".to_string())), |val| {
-                    if val.len() > 0 {
-                        Ok(Some(format!("Checks: {}", val.join(", "))))
-                    } else {
-                        Err(fmt::Error)
-                    }
-                });
-                match (resource_result, check_result) {
-                    (Ok(Some(string1)), Ok(Some(string2))) => {
-                        write!(f, "Clearing...\n\tResources: {}\n\t{}", string1, string2)
-                    },
-                    (Ok(None), Ok(Some(string2))) => {
-                        write!(f, "Clearing...\n\tResources: All resources\n\t{}", string2)
-                    },
-                    (Ok(Some(string1)), Ok(None)) => {
-                        write!(f, "Clearing...\n\tResources: {}\n\tChecks: All checks", string1)
-                    },
-                    (_, _) => {
-                        write!(f, "Clearing...\n\tFAILED! Either all resources or all checks were invalid. Exiting...")
-                    },
-                }
-            },
-            ShushOpts::List { sub: _, chk: _ } => {
-                Ok(())
-            }
-        }
-    }
-}
-
-impl IntoIterator for ShushOpts {
-    type Item = SensuPayload;
-    type IntoIter = vec::IntoIter<SensuPayload>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let match_iters = |r_iter: Option<ShushResources>,
-                           c_iter: Option<Vec<String>>,
-                           expire: Option<Expire>| {
-            let fold_closure = |mut acc: Vec<SensuPayload>, res, chk, expire| {
-                acc.push(SensuPayload { res, chk, expire });
-                acc
-            };
-
-            let vec = match (
-                r_iter.map(|x| { x.into_iter() }),
-                c_iter.map(|x| { x.into_iter() })
-            ) {
-                (Some(i1), Some(i2)) =>
-                    iproduct!(i1, i2).fold(Vec::new(), |acc, (res, chk)| {
-                        fold_closure(acc, Some(res), Some(chk), expire.clone())
-                    }),
-                (Some(i1), _) => i1.fold(Vec::new(), |acc, res| {
-                    fold_closure(acc, Some(res), None, expire.clone())
-                }),
-                (_, Some(i2)) => i2.fold(Vec::new(), |acc, chk| {
-                    fold_closure(acc, None, Some(chk), expire.clone())
-                }),
-                (_, _) => Vec::new(),
-            };
-            vec.into_iter()
-        };
-
-        match self {
-            ShushOpts::Silence { resource, checks, expire } => {
-                match_iters(resource, checks, Some(expire))
-            },
-            ShushOpts::Clear { resource, checks } => {
-                match_iters(resource, checks, None)
-            },
-            _ => {
-                unimplemented!()
-            },
-        }
-    }
-}
-
-fn parse_clock_time(e: String) -> Expire {
-    let mut time_fields: Vec<&str> = e.splitn(3, ':').collect();
-    time_fields.reverse();
-    let seconds = time_fields.iter().enumerate().fold(0, |acc, (index, val)| {
-        let base: usize = 60;
-        acc + base.pow(index as u32) * val.parse::<usize>().unwrap_or_else(|e| {
-            println!("Invalid time format: {}", e);
-            process::exit(1);
-        })
-    });
-    Expire::Expire(seconds)
-}
-
-fn parse_hms_time(e: String) -> Expire {
-    let re = Regex::new("(?P<num>[0-9]+)(?P<units>[dhms])").unwrap_or_else(|e| {
-        println!("Invalid time format: {}", e);
+    let regex = Regex::new("(?P<num>[0-9]+)(?P<units>[dhms])").unwrap_or_else(|e| {
+        println!("Failed to compile regex: {}", e);
         process::exit(1);
     });
-    let num_secs = re.captures_iter(e.as_str()).fold(0, |acc, cap| {
+    let num_secs = regex.captures_iter(expire.as_str()).fold(0, |acc, cap| {
         let num = cap.name("num").map(|val| val.as_str().parse::<usize>().unwrap_or(0));
         let units = cap.name("units").map(|val| val.as_str());
         acc + match (num, units) {
-            (Some(n), Some("d")) => n * 86400,
-            (Some(n), Some("h")) => n * 3600,
+            (Some(n), Some("d")) => n * 60 * 60 * 24,
+            (Some(n), Some("h")) => n * 60 * 60,
             (Some(n), Some("m")) => n * 60,
             (Some(n), Some("s")) => n,
-            _ => 0,
+            _ => 60 * 60 * 2,
         }
     });
-    Expire::Expire(num_secs)
+    Expire::Expire(num_secs, expire_on_resolve)
 }
 
-// Match and parse expiration value
-fn match_expire(e_val: Option<String>, o_val: bool, usage_message: String)
-                    -> Expire {
-    match (e_val, o_val) {
-        (Some(e), false) => {
-            if e == "none" {
-                Expire::NoExpiration
-            } else if e.contains(':') {
-                parse_clock_time(e)
-            } else if e.contains('d') || e.contains('h') || e.contains('m') || e.contains('s') {
-                parse_hms_time(e)
+pub struct Args<'a>(clap::ArgMatches<'a>);
+
+impl<'a> Args<'a> {
+    pub fn new() -> Self {
+        Args(App::new("shush").version(env!("CARGO_PKG_VERSION"))
+            .author("John Baublitz")
+            .about("Sensu silencing tool")
+            .arg(Arg::with_name("nodes")
+                 .short("n")
+                 .long("aws-nodes")
+                 .value_name("NODE1,NODE2,...")
+                 .help("Comma separated list of instance IDs")
+                 .takes_value(true)
+                 .conflicts_with_all(&["ids", "subscriptions"]))
+            .arg(Arg::with_name("ids")
+                 .short("i")
+                 .long("client-ids")
+                 .value_name("ID1,ID2,...")
+                 .help("Comma separated list of client IDs")
+                 .takes_value(true)
+                 .conflicts_with_all(&["nodes", "subscriptions"]))
+            .arg(Arg::with_name("subscriptions")
+                 .short("s")
+                 .long("subscriptions")
+                 .value_name("SUB1,SUB2,...")
+                 .help("Comma separated list of subscriptions")
+                 .takes_value(true)
+                 .conflicts_with_all(&["nodes", "ids"]))
+            .arg(Arg::with_name("remove")
+                 .short("r")
+                 .long("remove")
+                 .takes_value(false)
+                 .help("Remove specified silences"))
+            .arg(Arg::with_name("list")
+                 .short("l")
+                 .long("list")
+                 .takes_value(false)
+                 .help("List silences"))
+            .arg(Arg::with_name("checks")
+                 .short("c")
+                 .long("checks")
+                 .takes_value(true)
+                 .help("Comma separated list of checks")
+                 .value_name("CHK1,CHK2,..."))
+            .arg(Arg::with_name("expire")
+                 .short("e")
+                 .long("expire")
+                 .help("Time until check should expire or \"none\" for unlimited TTL")
+                 .takes_value(true)
+                 .value_name("EXPIRATION_TTL"))
+            .arg(Arg::with_name("expireonresolve")
+                 .short("o")
+                 .long("expire-on-resolve")
+                 .help("On resolution of alert, clear silence")
+                 .takes_value(false))
+            .arg(Arg::with_name("configfile")
+                 .short("f")
+                 .long("config-file")
+                 .help("Path to INI config file")
+                 .value_name("FILE_PATH")
+                 .takes_value(true))
+            .get_matches())
+    }
+
+    pub fn getconf(&self) -> ShushConfig {
+        ShushConfig::new(self.get_match("configfile"))
+    }
+
+    pub fn get_matches(&mut self) {
+    }
+
+    pub fn getopts(&self) -> ShushOpts {
+        let matches = &self.0;
+        let shush_opts = if matches.is_present("nodes") {
+            if matches.is_present("remove") {
+                ShushOpts::Clear(ClearOpts {
+                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Node,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                })
+            } else if matches.is_present("list") {
+                ShushOpts::List(ListOpts {
+                    sub: matches.value_of("nodes").map(|st| st.to_string()),
+                    chk: matches.value_of("checks").map(|st| st.to_string()),
+                })
             } else {
-                let exp = e.parse::<usize>().unwrap_or(7200);
-                if exp < 1 {
-                    println!("Expiration value must be greater than 0");
-                    println!("{}", usage_message);
-                    process::exit(1);
-                }
-                Expire::Expire(exp)
+                ShushOpts::Silence(SilenceOpts {
+                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Node,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
+                                           .unwrap_or("2h".to_string()),
+                                           matches.is_present("expireonresolve")),
+                })
             }
-        }
-        (None, false) => Expire::Expire(7200),
-        (None, true) => Expire::ExpireOnResolve,
-        (_, _) => {
-            println!("-e and -o cannot be used together");
-            println!("{}", usage_message);
-            process::exit(1);
-        },
-    }
-}
-
-// Match and parse resource
-#[inline]
-fn match_resource(n: Option<String>, i: Option<String>, s: Option<String>)
-                  -> Option<ShushResources> {
-    match (n, i, s) {
-        (Some(st), None, None) => Some(
-            ShushResources::Node(st.split(",").map(|val| val.to_string()).collect())
-        ),
-        (None, Some(st), None) => Some(
-            ShushResources::Client(st.split(",").map(|val| val.to_string()).collect())
-        ),
-        (None, None, Some(st)) => Some(
-            ShushResources::Sub(st.split(",").map(|val| val.to_string()).collect())
-        ),
-        (_, _, _) => None,
-    }
-}
-
-// Match and parse argument into `Vec`
-#[inline]
-fn match_comma_sep_args(res: Option<String>) -> Option<Vec<String>> {
-    match res {
-        Some(ref st) => Some(st.split(",").map(|x| { x.to_string() }).collect()),
-        _ => None,
-    }
-}
-
-fn opt_validation(n_opt: Option<String>, i_opt: Option<String>,
-                  s_opt: Option<String>, c_opt: Option<String>,
-                  expire: Expire, list: bool, remove: bool)
-                  -> ShushOpts {
-    // Helper closure for counting if more than one resource is present
-    let check_resource_count = |n_opt: &Option<String>,
-                                i_opt: &Option<String>,
-                                s_opt: &Option<String>| {
-        let opts = [n_opt, i_opt, s_opt];
-        let v: Vec<_> = opts.iter().filter(|val| val.is_some()).collect();
-        v.len() > 1
-    };
-
-    // Do actual work around checking validity of arguments passed and doing the
-    // corresponding actions
-    if list == true && remove == true {
-        println!("Cannot use -l and -r together");
-        process::exit(1);
-    } else if list == true {
-        if let Some(_) = n_opt {
-            println!("-n cannot be used with -l");
-            process::exit(1);
+        } else if matches.is_present("ids") {
+            if matches.is_present("remove") {
+                ShushOpts::Clear(ClearOpts {
+                    resource: matches.value_of("ids").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Client,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                })
+            } else if matches.is_present("list") {
+                ShushOpts::List(ListOpts {
+                    sub: matches.value_of("ids").map(|st| st.to_string()),
+                    chk: matches.value_of("checks").map(|st| st.to_string()),
+                })
+            } else {
+                ShushOpts::Silence(SilenceOpts {
+                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Client,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
+                                           .unwrap_or("2h".to_string()),
+                                           matches.is_present("expireonresolve")),
+                })
+            }
+        } else if matches.is_present("subscriptions") {
+            if matches.is_present("remove") {
+                ShushOpts::Clear(ClearOpts {
+                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Sub,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                })
+            } else if matches.is_present("list") {
+                ShushOpts::List(ListOpts {
+                    sub: matches.value_of("nodes").map(|st| st.to_string()),
+                    chk: matches.value_of("checks").map(|st| st.to_string()),
+                })
+            } else {
+                ShushOpts::Silence(SilenceOpts {
+                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                        resources: st.split(",").map(|s| s.to_string()).collect(),
+                        res_type: ShushResourceType::Sub,
+                    }),
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
+                                           .unwrap_or("2h".to_string()),
+                                           matches.is_present("expireonresolve")),
+                })
+            }
         } else {
-            ShushOpts::List {
-                sub: s_opt,
-                chk: c_opt,
+            if matches.is_present("remove") {
+                ShushOpts::Clear(ClearOpts {
+                    resource: None,
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                })
+            } else if matches.is_present("list") {
+                ShushOpts::List(ListOpts {
+                    sub: None,
+                    chk: matches.value_of("checks").map(|st| st.to_string()),
+                })
+            } else {
+                ShushOpts::Silence(SilenceOpts {
+                    resource: None,
+                    checks: matches.value_of("checks").map(|st| st.split(",")
+                                                           .map(|s| s.to_string()).collect()),
+                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
+                                           .unwrap_or("2h".to_string()),
+                                           matches.is_present("expireonresolve")),
+                })
             }
-        }
-    } else if remove == true {
-        if let (None, None, None, None) =
-                (n_opt.as_ref(), i_opt.as_ref(), s_opt.as_ref(), c_opt.as_ref()) {
-            println!("Must specify at least -n, -i, -s, or -c");
-            process::exit(1);
-        } else if check_resource_count(&n_opt, &i_opt, &s_opt) {
-            println!("Must specify only one of the following: -n, -s, or -i");
-            process::exit(1);
-        } else {
-            ShushOpts::Clear {
-                resource: match_resource(n_opt, i_opt, s_opt),
-                checks: match_comma_sep_args(c_opt),
-            }
-        }
-    } else {
-        if let (None, None, None, None) =
-                (n_opt.as_ref(), i_opt.as_ref(), s_opt.as_ref(), c_opt.as_ref()) {
-            println!("Must specify at least -n, -i, -s or -c");
-            process::exit(1);
-        } else if check_resource_count(&n_opt, &i_opt, &s_opt) {
-            println!("Must specify only one of the following: -n, -s, or -i");
-            process::exit(1);
-        } else {
-            ShushOpts::Silence {
-                resource: match_resource(n_opt, i_opt, s_opt),
-                checks: match_comma_sep_args(c_opt),
-                expire,
-            }
-        }
-    }
-}
-
-/// Do work for parsing and acting on CLI args
-pub fn getopts(args: Vec<String>) -> (ShushOpts, ShushConfig) {
-    let mut opts = getopts::Options::new();
-    opts.optflag("h", "help", "Help text")
-        .optflag("l", "list", "List resources specified")
-        .optopt("f", "config-file", "Point to INI config file", "FILE_PATH")
-        .optflag("r", "remove", "Remove specified silences")
-        .optopt("e", "expire", "Seconds until expiration or \"none\" for unlimited TTL", "EXPIRE")
-        .optflag("o", "expire-on-resolve", "On resolution of alert, clear silence")
-        .optopt("c", "checks", "Checks to silence", "CHECKS")
-        .optopt("n", "aws-nodes", "Comma separated list of instance IDs", "INST_IDS")
-        .optopt("i", "client-id", "Comma separated list of client IDs", "CLIENT_IDS")
-        .optopt("s", "subscriptions", "Comma separated list of subscriptions", "SUBSCRIPTIONS")
-        .optflag("v", "version", "shush version");
-
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(e) => {
-            println!("{}", e);
-            process::exit(1);
-        },
-    };
-    // Detect flags that print output and exit
-    if matches.opt_present("h") {
-        println!("{}", opts.usage(args[0].as_str()));
-        process::exit(0);
-    } else if matches.opt_present("v") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-        process::exit(0);
+        };
+        shush_opts
     }
 
-    // Check presence of other action flags and get expiration value or use default
-    let expire = match_expire(matches.opt_default("e", "7200"), matches.opt_present("o"),
-                              opts.usage(args[0].as_str()));
-    let list = matches.opt_present("l");
-    let remove = matches.opt_present("r");
-
-    let n_opt = matches.opt_str("n");
-    let i_opt = matches.opt_str("i");
-    let s_opt = matches.opt_str("s");
-    let c_opt = matches.opt_str("c");
-
-    // Parse config
-    let config = ShushConfig::new(matches.opt_str("f"));
-    (opt_validation(n_opt, i_opt, s_opt, c_opt, expire, list, remove), config)
+    pub fn get_match(&self, option: &str) -> Option<String> {
+        self.0.value_of(option).map(|s| s.to_string())
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use std::env;
-
-    #[test]
-    #[should_panic]
-    fn getopts_exit_no_action() {
-        getopts(vec!["-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref()].iter().map(|x| { x.to_string() }).collect());
-    }
-
-    #[test]
-    #[should_panic]
-    fn getopts_exit_s_n() {
-        getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-s", "sub", "-n", "i-something"].iter().map(|x| { x.to_string() }).collect());
-    }
-
-    #[test]
-    #[should_panic]
-    fn getopts_exit_l_r() {
-        getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-l", "-r"].iter().map(|x| { x.to_string() }).collect());
-    }
-
-    #[test]
-    fn getopts_n_c_split_and_eor() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-o", "-c", "a,b,c", "-n", "a,b,c"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence {
-            resource: Some(ShushResources::Node(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: Some(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect()),
-            expire: Expire::ExpireOnResolve,
-        })
-    }
-
-    #[test]
-    fn getopts_s_c_split_and_no_expiration() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-e", "none", "-c", "a,b,c", "-s", "a,b,c"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence {
-            resource: Some(ShushResources::Sub(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: Some(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect()),
-            expire: Expire::NoExpiration,
-        })
-    }
-
-    #[test]
-    fn getopts_s_c_split() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-c", "a,b,c", "-s", "a,b,c"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence{
-            resource: Some(ShushResources::Sub(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: Some(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect()),
-            expire: Expire::Expire(7200),
-        })
-    }
-
-    #[test]
-    fn getopts_s_c_split_remove() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-r", "-c", "a,b,c", "-s", "a,b,c"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Clear {
-            resource: Some(ShushResources::Sub(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: Some(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())
-        })
-    }
-
-    #[test]
-    fn getopts_expire_flag() {
-        let (shush_opts, _) = getopts(
-            vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a,b,c", "-e", "200"].iter().map(|x| { x.to_string() }).collect()
-        );
-        assert_eq!(shush_opts, ShushOpts::Silence {
-            resource: Some(ShushResources::Node(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: None,
-            expire: Expire::Expire(200),
-        })
-    }
-
-    #[test]
-    fn getopts_f_expand() {
-        env::set_var("ENV", "dev");
-        let (_, config) = getopts(
-            vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a"].iter().map(|x| { x.to_string() }).collect()
-        );
-        assert_eq!(Some("http://your.dev.here".to_string()), config.get("api"));
-    }
-
-    #[test]
-    fn getopts_expire_flag_invalid() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a,b,c", "-e", "200b"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence{
-            resource: Some(ShushResources::Node(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: None,
-            expire: Expire::Expire(7200),
-        })
-    }
-
-    #[test]
-    fn getopts_expire_fmt() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a,b,c", "-e", "10:10:1"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence {
-            resource: Some(ShushResources::Node(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: None,
-            expire: Expire::Expire(36601),
-        })
-    }
-
-    #[test]
-    fn getopts_expire_fmt_hms() {
-        let (shush_opts, _) = getopts(vec!["shush", "-f", format!("{}/{}", env!("CARGO_MANIFEST_DIR"), "cfg/shush.conf").as_ref(), "-n", "a,b,c", "-e", "1d10m1s"].iter().map(|x| { x.to_string() }).collect());
-        assert_eq!(shush_opts, ShushOpts::Silence {
-            resource: Some(ShushResources::Node(vec!["a", "b", "c"].iter().map(|x| { x.to_string() }).collect())),
-            checks: None,
-            expire: Expire::Expire(87001),
-        })
-    }
-
-    #[test]
-    #[should_panic]
-    fn getopts_expire_fmt_invalid() {
-       getopts(vec!["shush", "-n", "a,b,c", "-e", "10:10oops:1"].iter().map(|x| { x.to_string() }).collect());
-    }
 }
