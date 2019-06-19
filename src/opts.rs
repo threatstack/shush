@@ -1,22 +1,37 @@
 //! Generates Shush data structures for `sensu` module from command line flags
 
 use std::process;
+use std::vec;
 
 use clap::{App,Arg};
 use regex::Regex;
 
 use config::ShushConfig;
-use resources::{ShushResources,ShushResourceType};
+use resources::{ShushResources,ShushResourceIterator,ShushResourceType};
 use sensu::Expire;
 
 pub struct SilenceOpts {
-    resource: Option<ShushResources>,
-    checks: Option<Vec<String>>,
-    expire: Expire,
+    pub resources: Option<ShushResources>,
+    pub checks: Option<Vec<String>>,
+    pub expire: Expire,
+}
+
+impl IntoIterator for SilenceOpts {
+    type Item = (String, String);
+    type IntoIter = itertools::Product<ShushResourceIterator, vec::IntoIter<String>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let resources = self.resources.map(|r| r.into_iter()).unwrap_or(
+            ShushResources { res_type: ShushResourceType::Wildcard, resources: vec![String::new()] }
+                .into_iter()
+        );
+        let checks = self.checks.map(|c| c.into_iter()).unwrap_or(vec![String::new()].into_iter());
+        iproduct!(resources.into_iter(), checks.into_iter())
+    }
 }
 
 pub struct ClearOpts {
-    resource: Option<ShushResources>,
+    resources: Option<ShushResources>,
     checks: Option<Vec<String>>,
 }
 
@@ -129,7 +144,7 @@ impl<'a> Args<'a> {
         let shush_opts = if matches.is_present("nodes") {
             if matches.is_present("remove") {
                 ShushOpts::Clear(ClearOpts {
-                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("nodes").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Node,
                     }),
@@ -143,7 +158,7 @@ impl<'a> Args<'a> {
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
-                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("nodes").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Node,
                     }),
@@ -157,7 +172,7 @@ impl<'a> Args<'a> {
         } else if matches.is_present("ids") {
             if matches.is_present("remove") {
                 ShushOpts::Clear(ClearOpts {
-                    resource: matches.value_of("ids").map(|st| ShushResources {
+                    resources: matches.value_of("ids").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Client,
                     }),
@@ -171,7 +186,7 @@ impl<'a> Args<'a> {
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
-                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("nodes").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Client,
                     }),
@@ -185,7 +200,7 @@ impl<'a> Args<'a> {
         } else if matches.is_present("subscriptions") {
             if matches.is_present("remove") {
                 ShushOpts::Clear(ClearOpts {
-                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("nodes").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Sub,
                     }),
@@ -199,7 +214,7 @@ impl<'a> Args<'a> {
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
-                    resource: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("nodes").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Sub,
                     }),
@@ -213,7 +228,7 @@ impl<'a> Args<'a> {
         } else {
             if matches.is_present("remove") {
                 ShushOpts::Clear(ClearOpts {
-                    resource: None,
+                    resources: None,
                     checks: matches.value_of("checks").map(|st| st.split(",")
                                                            .map(|s| s.to_string()).collect()),
                 })
@@ -224,7 +239,7 @@ impl<'a> Args<'a> {
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
-                    resource: None,
+                    resources: None,
                     checks: matches.value_of("checks").map(|st| st.split(",")
                                                            .map(|s| s.to_string()).collect()),
                     expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())

@@ -129,10 +129,8 @@
 #![deny(missing_docs)]
 
 extern crate clap;
-extern crate futures;
 extern crate hyper;
 extern crate hyper_tls;
-extern crate native_tls;
 extern crate regex;
 extern crate tokio;
 
@@ -155,18 +153,13 @@ mod opts;
 mod resources;
 mod sensu;
 
-use std::{env,process};
 use std::error::Error;
 
-use hyper::Method;
-use serde_json::{Value,Map};
-
 use opts::ShushOpts;
-use sensu::{SensuClient,SensuEndpoint};
+use sensu::SensuClient;
 
 /// Main function - handle arg parsing and all executable actions
 pub fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
     let shush_args = opts::Args::new();
     let shush_opts = shush_args.getopts();
     let shush_cfg = shush_args.getconf();
@@ -174,9 +167,9 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let mut client = SensuClient::new(shush_cfg.get("api").unwrap_or(String::new()))?;
 
     match shush_opts {
-        ShushOpts::Silence(ref s) => client.silence(s)?,
-        ShushOpts::Clear(ref c) => client.clear(c)?,
-        ShushOpts::List(ref l) => client.list(l)?,
+        ShushOpts::Silence(s) => client.silence(s)?,
+        ShushOpts::Clear(c) => client.clear(c)?,
+        ShushOpts::List(l) => client.list(l)?,
     };
     Ok(())
 }

@@ -1,5 +1,6 @@
 //! Sensu API related request and response-parsing logic
 
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fmt::{self,Display};
@@ -13,6 +14,7 @@ use tokio::runtime::Runtime;
 
 use err::SensuError;
 use opts::{ClearOpts,ListOpts,SilenceOpts};
+use resources::{ShushResources,ShushResourceType};
 
 pub struct SensuClient(Client<HttpConnector>, Runtime, Uri);
 
@@ -22,9 +24,10 @@ impl SensuClient {
                        base_url.parse::<Uri>()?))
     }
 
-    pub fn request<B>(&mut self, method: Method, uri: Uri, body: Option<B>)
-            -> Result<Option<Value>, SensuError> where B: ToString {
-        let mut full_uri = uri;
+    pub fn request<U>(&mut self, method: Method, uri: U, body: Option<SensuPayload>)
+            -> Result<Option<Value>, SensuError> where U: Into<Uri> {
+        let mut full_uri = uri.into();
+        let map: Option<Map<String, Value>> = body.map(|b| b.into());
         if full_uri.authority_part().is_none() {
             let mut parts = full_uri.into_parts();
             let base_uri = self.2.clone().into_parts();
@@ -35,10 +38,13 @@ impl SensuClient {
 
         let mut builder = Request::builder();
         builder.method(method).uri(full_uri);
-        let req = if let Some(b) = body {
-            builder.header(header::CONTENT_LENGTH, b.to_string().len())
+        let req = if let Some(ref m) = map {
+            let body_string = serde_json::to_string(m).map_err(|e| {
+                SensuError::new(e.description())
+            })?;
+            builder.header(header::CONTENT_LENGTH, body_string.len())
             .header(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))
-            .body(Body::from(b.to_string()))
+            .body(Body::from(body_string))
             .map_err(|e| SensuError::new(e.description()))?
         } else {
             builder.body(Body::empty()).map_err(|e| SensuError::new(e.description()))?
@@ -66,15 +72,94 @@ impl SensuClient {
         }))
     }
 
-    pub fn silence(&mut self, s: &SilenceOpts) -> Result<(), Box<dyn Error>> {
+    pub fn get_node_to_client_map(&mut self) -> Result<HashMap<String, String>, Box<dyn Error>> {
+        let clients = self.request(Method::GET, SensuEndpoint::Clients, None)?;
+
+        let mut client_map = HashMap::new();
+        if let Some(Value::Array(v)) = clients {
+            for mut item in v {
+                let iid = item.as_object_mut().and_then(|obj| obj.remove("instance_id"));
+                let iid_string = match iid {
+                    Some(Value::String(string)) => Some(string),
+                    _ => None,
+                };
+
+                let client = item.as_object_mut().and_then(|client| client.remove("name"));
+                let client_string = match client {
+                    Some(Value::String(string)) => Some(string),
+                    _ => None,
+                };
+
+                if let (Some(i), Some(c)) = (iid_string, client_string) {
+                    client_map.insert(i, c);
+                }
+            }
+        }
+
+        Ok(client_map)
+    }
+
+    pub fn map_to_sensu_resources(&mut self, res: ShushResources)
+            -> Result<Vec<SensuResource>, Box<dyn Error>>{
+        let (resource_type, resources) = (res.res_type, res.resources);
+        let mut map = self.get_node_to_client_map()?;
+        let mapped_resources = match resource_type {
+            ShushResourceType::Node => resources.iter().fold(Vec::new(), |mut acc, v| {
+                if let Some(val) = map.remove(v) {
+                    acc.push(SensuResource::Client(val));
+                } else {
+                    println!(r#"WARNING: instance ID "{}" not associated with Sensu client ID"#, v);
+                    println!("If you recently provisioned an instance, please wait for it to \
+                             register with Sensu");
+                    println!();
+                }
+                acc
+            }),
+            ShushResourceType::Sub => resources.into_iter()
+                .map(SensuResource::Subscription).collect(),
+            ShushResourceType::Client => resources.into_iter()
+                .map(SensuResource::Client).collect(),
+            ShushResourceType::Wildcard => Vec::new(),
+        };
+        Ok(mapped_resources)
+    }
+
+    pub fn silence(&mut self, s: SilenceOpts) -> Result<(), Box<dyn Error>> {
+        let expire = s.expire.clone();
+        let resources = s.resources.and_then(|res| match self.map_to_sensu_resources(res) {
+            Ok(vec) => Some(vec),
+            Err(e) => {
+                println!("{}", e);
+                None
+            },
+        }).unwrap_or(Vec::new());
+        let checks = s.checks.unwrap_or(Vec::new());
+        for (target, check) in iproduct!(resources, checks) {
+            self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                res: {
+                    let target_string = format!("{}", target);
+                    if target_string.len() > 0 {
+                        Some(target_string)
+                    } else {
+                        None
+                    }
+                },
+                chk: if check.len() > 0 {
+                    Some(check)
+                } else {
+                    None
+                },
+                expire: Some(expire.clone()),
+            }))?;
+        }
         Ok(())
     }
 
-    pub fn clear(&mut self, s: &ClearOpts) -> Result<(), Box<dyn Error>> {
+    pub fn clear(&mut self, s: ClearOpts) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 
-    pub fn list(&mut self, s: &ListOpts) -> Result<(), Box<dyn Error>> {
+    pub fn list(&mut self, s: ListOpts) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 }
@@ -89,7 +174,7 @@ pub enum SensuEndpoint<'a> {
     /// Endpoint for getting clients
     Clients,
     /// Endpoint for getting a single client
-    Client(&'a String),
+    Client(&'a str),
     /// Endpoint for getting check results
     Results,
 }
@@ -99,7 +184,8 @@ impl<'a> Into<Uri> for SensuEndpoint<'a> {
         match self {
             SensuEndpoint::Silenced => "/silenced".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Clear => "/silenced/clear".parse::<Uri>().expect("Should not get here"),
-            SensuEndpoint::Client(c) => format!("/clients/{}", c).parse::<Uri>().expect("Should not get here"),
+            SensuEndpoint::Client(c) => format!("/clients/{}", c).parse::<Uri>()
+                .expect("Should not get here"),
             SensuEndpoint::Clients => "/clients".parse::<Uri>().expect("Should not get here"),
             SensuEndpoint::Results => "/results".parse::<Uri>().expect("Should not get here"),
         }
@@ -110,7 +196,7 @@ impl<'a> Into<Uri> for SensuEndpoint<'a> {
 #[derive(Debug)]
 pub struct SensuPayload {
     /// Resource (node, client, or subscription)
-    pub res: Option<SensuResource>,
+    pub res: Option<String>,
     /// Sensu check
     pub chk: Option<String>,
     /// Time until expiration
@@ -126,10 +212,8 @@ impl Into<Map<String, Value>> for SensuPayload {
         payload.insert("creator".to_string(), Value::String(user));
 
         // Handle subscription for payload as Sensu client value, subscription, or all
-        if let Some(SensuResource::Sub(s)) = self.res {
-            payload.insert("subscription".to_string(), Value::String(s));
-        } else if let Some(SensuResource::Client(c)) = self.res {
-            payload.insert("subscription".to_string(), Value::String(format!("client:{}", c)));
+        if let Some(string) = self.res {
+            payload.insert("subscription".to_string(), Value::from(string));
         }
 
         // If checks specified, silence only these - otherwise silence all
@@ -154,24 +238,6 @@ impl Into<Map<String, Value>> for SensuPayload {
     }
 }
 
-/// Enum for typing clients vs. subscriptions in Sensu
-#[derive(Clone,Debug)]
-pub enum SensuResource {
-    /// Sets the subscription field in the JSON payload
-    Sub(String),
-    /// Same field in JSON but handles appending `client:` to the beginning
-    Client(String),
-}
-
-impl Into<String> for SensuResource {
-    fn into(self) -> String {
-        match self {
-            SensuResource::Sub(s) => s,
-            SensuResource::Client(s) => format!("client:{}", s),
-        }
-    }
-}
-
 /// Enum for all types of duration of silences - only used in silences
 #[derive(Debug,PartialEq,Clone)]
 pub enum Expire {
@@ -188,6 +254,22 @@ impl Display for Expire {
             Expire::NoExpiration(false) => write!(f, "never expire"),
             Expire::Expire(sz, true) => write!(f, "expire in {} seconds or on resolution", sz),
             Expire::Expire(sz, false) => write!(f, "expire in {} seconds", sz),
+        }
+    }
+}
+
+/// Sensu resource for conversion to payload
+#[derive(Clone)]
+pub enum SensuResource {
+    Client(String),
+    Subscription(String),
+}
+
+impl Display for SensuResource {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            SensuResource::Client(ref s) => write!(f, "client:{}", s),
+            SensuResource::Subscription(ref s) => write!(f, "{}", s),
         }
     }
 }
