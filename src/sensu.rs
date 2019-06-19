@@ -119,43 +119,94 @@ impl SensuClient {
                 .map(SensuResource::Subscription).collect(),
             ShushResourceType::Client => resources.into_iter()
                 .map(SensuResource::Client).collect(),
-            ShushResourceType::Wildcard => Vec::new(),
         };
         Ok(mapped_resources)
     }
 
     pub fn silence(&mut self, s: SilenceOpts) -> Result<(), Box<dyn Error>> {
-        let expire = s.expire.clone();
-        let resources = s.resources.and_then(|res| match self.map_to_sensu_resources(res) {
-            Ok(vec) => Some(vec),
+        let resources: Option<Vec<String>> = s.resources
+                .and_then(|res| match self.map_to_sensu_resources(res) {
+            Ok(vec) => Some(vec.into_iter().map(|r| format!("{}", r)).collect()),
             Err(e) => {
                 println!("{}", e);
                 None
             },
-        }).unwrap_or(Vec::new());
-        let checks = s.checks.unwrap_or(Vec::new());
-        for (target, check) in iproduct!(resources, checks) {
-            self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
-                res: {
-                    let target_string = format!("{}", target);
-                    if target_string.len() > 0 {
-                        Some(target_string)
-                    } else {
-                        None
-                    }
-                },
-                chk: if check.len() > 0 {
-                    Some(check)
-                } else {
-                    None
-                },
-                expire: Some(expire.clone()),
-            }))?;
-        }
+        });
+        let checks = s.checks;
+        let expire = s.expire;
+        match (resources, checks) {
+            (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
+                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                    res: Some(r),
+                    chk: Some(c),
+                    expire: Some(expire.clone()),
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (Some(res), None) => res.into_iter().for_each(|r| {
+                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                    res: Some(r),
+                    chk: None,
+                    expire: Some(expire.clone()),
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (None, Some(chk)) => chk.into_iter().for_each(|c| {
+                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                    res: None,
+                    chk: Some(c),
+                    expire: Some(expire.clone()),
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (_, _) => unreachable!(),
+        };
         Ok(())
     }
 
     pub fn clear(&mut self, s: ClearOpts) -> Result<(), Box<dyn Error>> {
+        let resources: Option<Vec<String>> = s.resources
+                .and_then(|res| match self.map_to_sensu_resources(res) {
+            Ok(vec) => Some(vec.into_iter().map(|r| format!("{}", r)).collect()),
+            Err(e) => {
+                println!("{}", e);
+                None
+            },
+        });
+        let checks = s.checks;
+        match (resources, checks) {
+            (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
+                let _ = self.request(Method::POST, SensuEndpoint::Clear, Some(SensuPayload {
+                    res: Some(r),
+                    chk: Some(c),
+                    expire: None,
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (Some(res), None) => res.into_iter().for_each(|r| {
+                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                    res: Some(r),
+                    chk: None,
+                    expire: None,
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (None, Some(chk)) => chk.into_iter().for_each(|c| {
+                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                    res: None,
+                    chk: Some(c),
+                    expire: None,
+                })).map_err(|e| {
+                    println!("{}", e);
+                });
+            }),
+            (_, _) => unreachable!(),
+        };
         Ok(())
     }
 

@@ -1,13 +1,12 @@
 //! Generates Shush data structures for `sensu` module from command line flags
 
 use std::process;
-use std::vec;
 
 use clap::{App,Arg};
 use regex::Regex;
 
 use config::ShushConfig;
-use resources::{ShushResources,ShushResourceIterator,ShushResourceType};
+use resources::{ShushResources,ShushResourceType};
 use sensu::Expire;
 
 pub struct SilenceOpts {
@@ -16,28 +15,14 @@ pub struct SilenceOpts {
     pub expire: Expire,
 }
 
-impl IntoIterator for SilenceOpts {
-    type Item = (String, String);
-    type IntoIter = itertools::Product<ShushResourceIterator, vec::IntoIter<String>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let resources = self.resources.map(|r| r.into_iter()).unwrap_or(
-            ShushResources { res_type: ShushResourceType::Wildcard, resources: vec![String::new()] }
-                .into_iter()
-        );
-        let checks = self.checks.map(|c| c.into_iter()).unwrap_or(vec![String::new()].into_iter());
-        iproduct!(resources.into_iter(), checks.into_iter())
-    }
-}
-
 pub struct ClearOpts {
-    resources: Option<ShushResources>,
-    checks: Option<Vec<String>>,
+    pub resources: Option<ShushResources>,
+    pub checks: Option<Vec<String>>,
 }
 
 pub struct ListOpts {
-    sub: Option<String>,
-    chk: Option<String>,
+    pub sub: Option<String>,
+    pub chk: Option<String>,
 }
 
 pub enum ShushOpts {
@@ -134,9 +119,6 @@ impl<'a> Args<'a> {
 
     pub fn getconf(&self) -> ShushConfig {
         ShushConfig::new(self.get_match("configfile"))
-    }
-
-    pub fn get_matches(&mut self) {
     }
 
     pub fn getopts(&self) -> ShushOpts {

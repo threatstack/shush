@@ -21,14 +21,6 @@ impl SensuError {
     pub fn not_found() -> Self {
         SensuError::NotFound
     }
-
-    pub fn is_404(&self) -> bool {
-        if let SensuError::Message(_) = self {
-            false
-        } else {
-            true
-        }
-    }
 }
 
 impl From<hyper::Error> for SensuError {
