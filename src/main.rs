@@ -134,11 +134,6 @@ extern crate hyper_tls;
 extern crate regex;
 extern crate tokio;
 
-// Only need `json!()` macro for testing
-#[cfg(test)]
-#[macro_use]
-extern crate serde_json;
-#[cfg(not(test))]
 extern crate serde_json;
 
 #[macro_use]

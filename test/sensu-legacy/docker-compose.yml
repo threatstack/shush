@@ -1,0 +1,19 @@
+version: '3'
+services:
+  redis:
+    build: ./redis
+    ports:
+      - '6379:6379/tcp'
+      - '5672:5672/tcp'
+  sensu-api:
+    build: ./sensu-api
+    ports:
+      - '4567:4567/tcp'
+    links:
+      - redis
+  sensu-server:
+    build: ./sensu-server
+    ports:
+      - '3000:3000/tcp'
+    links:
+      - redis

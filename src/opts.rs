@@ -168,7 +168,7 @@ impl<'a> Args<'a> {
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
-                    resources: matches.value_of("nodes").map(|st| ShushResources {
+                    resources: matches.value_of("ids").map(|st| ShushResources {
                         resources: st.split(",").map(|s| s.to_string()).collect(),
                         res_type: ShushResourceType::Client,
                     }),

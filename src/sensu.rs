@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fmt::{self,Display};
+use std::process;
 
 use serde_json::{self,Value,Map,Number};
 use hyper::{Body,Client,Method,Request,StatusCode,Uri};
@@ -60,6 +61,9 @@ impl SensuClient {
         }).and_then(|resp| {
             resp.into_body().concat2().map_err(|e| SensuError::from(e))
         }).and_then(|chunk| {
+            if chunk.len() < 1 {
+                return Ok(None);
+            }
             serde_json::from_slice::<Value>(&chunk).map_err(|e| {
                 println!("Response: {}", match std::str::from_utf8(&chunk).map_err(|e| {
                     SensuError::new(&e.to_string())
@@ -124,42 +128,45 @@ impl SensuClient {
     }
 
     pub fn silence(&mut self, s: SilenceOpts) -> Result<(), Box<dyn Error>> {
-        let resources: Option<Vec<String>> = s.resources
-                .and_then(|res| match self.map_to_sensu_resources(res) {
-            Ok(vec) => Some(vec.into_iter().map(|r| format!("{}", r)).collect()),
-            Err(e) => {
-                println!("{}", e);
-                None
-            },
-        });
+        let resources: Option<Vec<String>> = match s.resources {
+            Some(res) => Some(self.map_to_sensu_resources(res)?.into_iter()
+                .map(|r| format!("{}", r)).collect()),
+            None => None,
+        };
         let checks = s.checks;
         let expire = s.expire;
         match (resources, checks) {
             (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
+                println!("Silencing check {} on resource {}", c, r);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: Some(r),
                     chk: Some(c),
                     expire: Some(expire.clone()),
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (Some(res), None) => res.into_iter().for_each(|r| {
+                println!("Silencing all checks on resource {}", r);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: Some(r),
                     chk: None,
                     expire: Some(expire.clone()),
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (None, Some(chk)) => chk.into_iter().for_each(|c| {
+                println!("Silencing check {} on all resources", c);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: None,
                     chk: Some(c),
                     expire: Some(expire.clone()),
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (_, _) => unreachable!(),
@@ -168,14 +175,11 @@ impl SensuClient {
     }
 
     pub fn clear(&mut self, s: ClearOpts) -> Result<(), Box<dyn Error>> {
-        let resources: Option<Vec<String>> = s.resources
-                .and_then(|res| match self.map_to_sensu_resources(res) {
-            Ok(vec) => Some(vec.into_iter().map(|r| format!("{}", r)).collect()),
-            Err(e) => {
-                println!("{}", e);
-                None
-            },
-        });
+        let resources: Option<Vec<String>> = match s.resources {
+            Some(res) => Some(self.map_to_sensu_resources(res)?.into_iter()
+                .map(|r| format!("{}", r)).collect()),
+            None => None,
+        };
         let checks = s.checks;
         match (resources, checks) {
             (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
@@ -185,6 +189,7 @@ impl SensuClient {
                     expire: None,
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (Some(res), None) => res.into_iter().for_each(|r| {
@@ -194,6 +199,7 @@ impl SensuClient {
                     expire: None,
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (None, Some(chk)) => chk.into_iter().for_each(|c| {
@@ -203,6 +209,7 @@ impl SensuClient {
                     expire: None,
                 })).map_err(|e| {
                     println!("{}", e);
+                    process::exit(1);
                 });
             }),
             (_, _) => unreachable!(),
@@ -310,7 +317,7 @@ impl Display for Expire {
 }
 
 /// Sensu resource for conversion to payload
-#[derive(Clone)]
+#[derive(Debug,Clone)]
 pub enum SensuResource {
     Client(String),
     Subscription(String),
