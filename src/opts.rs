@@ -2,7 +2,7 @@
 
 use std::process;
 
-use clap::{App,Arg};
+use clap::{App,Arg,ArgMatches};
 use regex::Regex;
 
 use config::ShushConfig;
@@ -122,111 +122,83 @@ impl<'a> Args<'a> {
     }
 
     pub fn getopts(&self) -> ShushOpts {
+        let clearopts = |matches: &ArgMatches, res_arg, res_type| {
+            ShushOpts::Clear(ClearOpts {
+                resources: matches.value_of(res_arg).map(|st| ShushResources {
+                    resources: st.split(",").map(|s| s.to_string()).collect(),
+                    res_type,
+                }),
+                checks: matches.value_of("checks")
+                    .map(|st| st.split(",").map(|s| s.to_string()).collect()),
+            })
+        };
+
+        let listopts = |matches: &ArgMatches, res_arg| {
+            ShushOpts::List(ListOpts {
+                sub: matches.value_of(res_arg).map(|st| st.to_string()),
+                chk: matches.value_of("checks").map(|st| st.to_string()),
+            })
+        };
+
+        let expiration = |matches: &ArgMatches| {
+            get_expiration(matches.value_of("expire").map(|s| s.to_string())
+                           .unwrap_or("2h".to_string()),
+                           matches.is_present("expireonresolve"))
+        };
+
+        let silenceopts = |matches: &ArgMatches, res_arg, res_type| {
+            ShushOpts::Silence(SilenceOpts {
+                resources: matches.value_of(res_arg).map(|st| ShushResources {
+                    resources: st.split(",").map(|s| s.to_string()).collect(),
+                    res_type,
+                }),
+                checks: matches.value_of("checks").map(|st| st.split(",")
+                                                       .map(|s| s.to_string()).collect()),
+                expire: expiration(matches),
+            })
+        };
+
         let matches = &self.0;
         let shush_opts = if matches.is_present("nodes") {
             if matches.is_present("remove") {
-                ShushOpts::Clear(ClearOpts {
-                    resources: matches.value_of("nodes").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Node,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                })
+                clearopts(matches, "nodes", ShushResourceType::Node)
             } else if matches.is_present("list") {
-                ShushOpts::List(ListOpts {
-                    sub: matches.value_of("nodes").map(|st| st.to_string()),
-                    chk: matches.value_of("checks").map(|st| st.to_string()),
-                })
+                listopts(matches, "nodes")
             } else {
-                ShushOpts::Silence(SilenceOpts {
-                    resources: matches.value_of("nodes").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Node,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
-                                           .unwrap_or("2h".to_string()),
-                                           matches.is_present("expireonresolve")),
-                })
+                silenceopts(matches, "nodes", ShushResourceType::Node)
             }
         } else if matches.is_present("ids") {
             if matches.is_present("remove") {
-                ShushOpts::Clear(ClearOpts {
-                    resources: matches.value_of("ids").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Client,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                })
+                clearopts(matches, "ids", ShushResourceType::Client)
             } else if matches.is_present("list") {
-                ShushOpts::List(ListOpts {
-                    sub: matches.value_of("ids").map(|st| st.to_string()),
-                    chk: matches.value_of("checks").map(|st| st.to_string()),
-                })
+                listopts(matches, "ids")
             } else {
-                ShushOpts::Silence(SilenceOpts {
-                    resources: matches.value_of("ids").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Client,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
-                                           .unwrap_or("2h".to_string()),
-                                           matches.is_present("expireonresolve")),
-                })
+                silenceopts(matches, "ids", ShushResourceType::Client)
             }
         } else if matches.is_present("subscriptions") {
             if matches.is_present("remove") {
-                ShushOpts::Clear(ClearOpts {
-                    resources: matches.value_of("nodes").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Sub,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                })
+                clearopts(matches, "subscriptions", ShushResourceType::Sub)
             } else if matches.is_present("list") {
-                ShushOpts::List(ListOpts {
-                    sub: matches.value_of("nodes").map(|st| st.to_string()),
-                    chk: matches.value_of("checks").map(|st| st.to_string()),
-                })
+                listopts(matches, "subscriptions")
             } else {
-                ShushOpts::Silence(SilenceOpts {
-                    resources: matches.value_of("nodes").map(|st| ShushResources {
-                        resources: st.split(",").map(|s| s.to_string()).collect(),
-                        res_type: ShushResourceType::Sub,
-                    }),
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
-                                           .unwrap_or("2h".to_string()),
-                                           matches.is_present("expireonresolve")),
-                })
+                silenceopts(matches, "subscriptions", ShushResourceType::Sub)
             }
         } else {
             if matches.is_present("remove") {
                 ShushOpts::Clear(ClearOpts {
                     resources: None,
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
+                    checks: self.get_match_as_vec("checks"),
                 })
             } else if matches.is_present("list") {
                 ShushOpts::List(ListOpts {
                     sub: None,
-                    chk: matches.value_of("checks").map(|st| st.to_string()),
+                    chk: self.get_match("checks"),
                 })
             } else {
                 ShushOpts::Silence(SilenceOpts {
                     resources: None,
-                    checks: matches.value_of("checks").map(|st| st.split(",")
-                                                           .map(|s| s.to_string()).collect()),
-                    expire: get_expiration(matches.value_of("expire").map(|s| s.to_string())
-                                           .unwrap_or("2h".to_string()),
-                                           matches.is_present("expireonresolve")),
+                    checks: self.get_match_as_vec("checks"),
+                    expire: expiration(matches),
                 })
             }
         };
@@ -235,6 +207,10 @@ impl<'a> Args<'a> {
 
     pub fn get_match(&self, option: &str) -> Option<String> {
         self.0.value_of(option).map(|s| s.to_string())
+    }
+
+    pub fn get_match_as_vec(&self, option: &str) -> Option<Vec<String>> {
+        self.0.value_of(option).map(|st| st.split(",").map(|s| s.to_string()).collect())
     }
 }
 

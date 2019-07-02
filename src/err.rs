@@ -18,6 +18,10 @@ impl SensuError {
         SensuError::Message(msg.to_string())
     }
 
+    pub fn new_string<F>(any_format: F) -> Self where F: Display {
+        SensuError::Message(format!("{}", any_format))
+    }
+
     pub fn not_found() -> Self {
         SensuError::NotFound
     }
