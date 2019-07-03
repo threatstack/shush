@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap,HashSet};
 use std::convert::TryInto;
 use std::error::Error;
@@ -123,9 +124,8 @@ impl SensuClient {
                 }
             }).collect(),
             ShushResourceType::Sub => {
-                let mut subs = resources.into_iter().map(SensuResource::Subscription).collect();
-                self.validate_subscriptions(&mut subs);
-                subs
+                let subs = resources.into_iter().map(SensuResource::Subscription).collect();
+                self.validate_subscriptions(subs)
             },
             ShushResourceType::Client => resources.into_iter()
                 .filter_map(|c| {
@@ -148,21 +148,21 @@ impl SensuClient {
         }
     }
 
-    fn validate_subscriptions(&mut self, subscriptions: &mut Vec<SensuResource>) {
+    fn validate_subscriptions(&mut self, subscriptions: Vec<SensuResource>) -> Vec<SensuResource> {
         let print_error = || {
             println!("Failed to pull data from API for subscriptions");
             println!("Proceeding without subscription validation");
         };
 
-        let resp_res = self.request(Method::GET, SensuEndpoint::Results, None);
+        let resp_res = self.request(Method::GET, SensuEndpoint::Clients, None);
         let resp = match resp_res {
             Err(SensuError::NotFound) => {
                 print_error();
-                return;
+                return subscriptions;
             },
             Err(SensuError::Message(s)) => {
                 println!("{}", s);
-                return;
+                return subscriptions;
             },
             Ok(resp) => resp,
         };
@@ -170,7 +170,7 @@ impl SensuClient {
         let mut subs: HashSet<String> = HashSet::new();
         if let Some(Value::Array(vec)) = resp {
             let iter: Vec<String> = vec.into_iter().filter_map(|obj| {
-                obj.as_object().and_then(|o| o.get("subscribers"))
+                obj.as_object().and_then(|o| o.get("subscriptions"))
                     .and_then(|subs| subs.as_array()).map(|arr| {
                         let v: Vec<String> = arr.into_iter()
                             .filter_map(|s| s.as_str().map(|st| st.to_string())).collect();
@@ -182,10 +182,17 @@ impl SensuClient {
             }
         } else {
             print_error();
-            return;
+            return subscriptions;
         };
 
-
+        subscriptions.into_iter().filter_map(|sub| {
+            let string: &String = sub.borrow();
+            if subs.contains(string) {
+                Some(sub)
+            } else {
+                None
+            }
+        }).collect()
     }
 
     pub fn silence(&mut self, s: SilenceOpts) -> Result<(), Box<dyn Error>> {
@@ -198,7 +205,7 @@ impl SensuClient {
         let expire = s.expire;
         match (resources, checks) {
             (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
-                println!("Silencing check {} on resource {}", c, r);
+                println!("Silencing check {} on resource {} and will {}", c, r, expire);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: Some(r),
                     chk: Some(c),
@@ -209,7 +216,7 @@ impl SensuClient {
                 });
             }),
             (Some(res), None) => res.into_iter().for_each(|r| {
-                println!("Silencing all checks on resource {}", r);
+                println!("Silencing all checks on resource {} and will {}", r, expire);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: Some(r),
                     chk: None,
@@ -220,7 +227,7 @@ impl SensuClient {
                 });
             }),
             (None, Some(chk)) => chk.into_iter().for_each(|c| {
-                println!("Silencing check {} on all resources", c);
+                println!("Silencing checks {} on all resources and will {}", c, expire);
                 let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
                     res: None,
                     chk: Some(c),
@@ -247,6 +254,7 @@ impl SensuClient {
         let checks = s.checks;
         match (resources, checks) {
             (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
+                println!("Clearing silences on checks {} on resources {}", c, r);
                 let _ = self.request(Method::POST, SensuEndpoint::Clear, Some(SensuPayload {
                     res: Some(r),
                     chk: Some(c),
@@ -257,7 +265,8 @@ impl SensuClient {
                 });
             }),
             (Some(res), None) => res.into_iter().for_each(|r| {
-                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                println!("Clearing silences on all checks on resources {}", r);
+                let _ = self.request(Method::POST, SensuEndpoint::Clear, Some(SensuPayload {
                     res: Some(r),
                     chk: None,
                     expire: None,
@@ -267,7 +276,8 @@ impl SensuClient {
                 });
             }),
             (None, Some(chk)) => chk.into_iter().for_each(|c| {
-                let _ = self.request(Method::POST, SensuEndpoint::Silenced, Some(SensuPayload {
+                println!("Clearing silences on checks {} on all resources", c);
+                let _ = self.request(Method::POST, SensuEndpoint::Clear, Some(SensuPayload {
                     res: None,
                     chk: Some(c),
                     expire: None,
@@ -276,12 +286,38 @@ impl SensuClient {
                     process::exit(1);
                 });
             }),
-            (_, _) => unreachable!(),
+            (_, _) => {
+                println!("No targets specified - Exiting...");
+                process::exit(1);
+            },
         };
         Ok(())
     }
 
     pub fn list(&mut self, s: ListOpts) -> Result<(), Box<dyn Error>> {
+        let resp = self.request(Method::GET, SensuEndpoint::Silenced, None)?;
+        if let Some(Value::Array(v)) = resp {
+            for obj in v {
+                if let Value::Object(o) = obj {
+                    let user = o.get("creator").and_then(|c| c.as_str()).unwrap_or("unknown");
+                    let subscription = o.get("subscription").and_then(|c| c.as_str())
+                        .unwrap_or("all");
+                    let check = o.get("check").and_then(|c| c.as_str()).unwrap_or("all");
+                    let expire = o.get("expire").and_then(|c| c.as_u64());
+                    let eor = o.get("expire_on_resolve").and_then(|c| c.as_bool()).unwrap_or(false);
+
+                    println!("subscription:\t\t{}", subscription);
+                    println!("Check:\t\t\t{}", check);
+                    match expire {
+                        Some(num) => println!("Expiration:\t\t{}", num),
+                        None => println!("Expiration:\t\tnever"),
+                    };
+                    println!("Expire on resolve:\t{}", eor);
+                    println!("User:\t\t\t{}", user);
+                    println!();
+                }
+            }
+        }
         Ok(())
     }
 }

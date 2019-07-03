@@ -35,7 +35,7 @@ pub fn get_expiration(expire: String, expire_on_resolve: bool) -> Expire {
     if expire.as_str() == "none" {
         return Expire::NoExpiration(expire_on_resolve);
     }
-    let regex = Regex::new("(?P<num>[0-9]+)(?P<units>[dhms])").unwrap_or_else(|e| {
+    let regex = Regex::new("(?P<num>[0-9]+)(?P<units>[dhms])?").unwrap_or_else(|e| {
         println!("Failed to compile regex: {}", e);
         process::exit(1);
     });
@@ -47,6 +47,7 @@ pub fn get_expiration(expire: String, expire_on_resolve: bool) -> Expire {
             (Some(n), Some("h")) => n * 60 * 60,
             (Some(n), Some("m")) => n * 60,
             (Some(n), Some("s")) => n,
+            (Some(n), None) => n,
             _ => 60 * 60 * 2,
         }
     });
