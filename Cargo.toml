@@ -1,6 +1,6 @@
 [package]
 name = "shush"
-version = "0.2.4"
+version = "0.2.3"
 authors = ["John Baublitz <john.m.baublitz@gmail.com>"]
 description = "A management tool for silencing Sensu checks written in Rust"
 repository = "https://github.com/threatstack/shush"
@@ -13,7 +13,7 @@ include = [
 ]
 
 [dependencies]
-clap = "*"
+clap = "2.33.0"
 hyper = "0.12"
 hyper-tls = "0.3"
 itertools = "0.6.0"
