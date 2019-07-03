@@ -14,7 +14,6 @@ pub enum SensuEndpoint<'a> {
     /// Endpoint for getting a single client
     Client(&'a str),
     /// Endpoint for getting check results
-    #[allow(dead_code)]
     Results,
 }
 

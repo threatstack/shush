@@ -10,6 +10,7 @@ use hyper::{Body,Client,Method,Request,StatusCode,Uri};
 use hyper::client::HttpConnector;
 use hyper::header::{self,HeaderValue};
 use hyper::rt::{Future,Stream};
+use regex::{Regex,RegexBuilder};
 use tokio::runtime::Runtime;
 
 use super::*;
@@ -167,32 +168,71 @@ impl SensuClient {
             Ok(resp) => resp,
         };
 
-        let mut subs: HashSet<String> = HashSet::new();
-        if let Some(Value::Array(vec)) = resp {
-            let iter: Vec<String> = vec.into_iter().filter_map(|obj| {
+        let subs: HashSet<String> = if let Some(Value::Array(vec)) = resp {
+            vec.into_iter().filter_map(|obj| {
                 obj.as_object().and_then(|o| o.get("subscriptions"))
                     .and_then(|subs| subs.as_array()).map(|arr| {
                         let v: Vec<String> = arr.into_iter()
                             .filter_map(|s| s.as_str().map(|st| st.to_string())).collect();
                         v
                     })
-            }).flatten().collect();
-            for name in iter {
-                subs.insert(name);
-            }
+            }).flatten().collect()
         } else {
             print_error();
             return subscriptions;
         };
 
-        subscriptions.into_iter().filter_map(|sub| {
+        subscriptions.into_iter().filter(|sub| {
             let string: &String = sub.borrow();
             if subs.contains(string) {
-                Some(sub)
+                true
             } else {
-                None
+                println!("Subscription {} does not exist - filtering...", sub);
+                false
             }
         }).collect()
+    }
+
+    fn validate_checks(&mut self, checks: Vec<String>) -> Vec<String> {
+        let print_error = || {
+            println!("Failed to pull data from API for check results");
+            println!("Proceeding without check validation");
+        };
+
+        let results_res = self.request(Method::GET, SensuEndpoint::Results, None);
+        let results = match results_res {
+            Err(SensuError::NotFound) => {
+                print_error();
+                return checks;
+            },
+            Err(SensuError::Message(s)) => {
+                println!("{}", s);
+                return checks;
+            },
+            Ok(res) => res,
+        };
+
+        let hs: HashSet<String> = if let Some(Value::Array(vec)) = results {
+             vec.into_iter().filter_map(|obj| {
+                obj.as_object().and_then(|o| o.get("check"))
+                    .and_then(|c| c.get("name"))
+                    .and_then(|n| n.as_str().map(|st| st.to_string()))
+            }).collect()
+        } else {
+            print_error();
+            return checks;
+        };
+
+        let filtered_checks: Vec<String> = checks.into_iter().filter(|chk| {
+            if hs.contains(chk) {
+                true
+            } else {
+                println!("Check {} does not exist - filtering...", chk);
+                false
+            }
+        }).collect();
+
+        filtered_checks
     }
 
     pub fn silence(&mut self, s: SilenceOpts) -> Result<(), Box<dyn Error>> {
@@ -201,7 +241,7 @@ impl SensuClient {
                 .map(|r| format!("{}", r)).collect()),
             None => None,
         };
-        let checks = s.checks;
+        let checks = s.checks.map(|cks| self.validate_checks(cks));
         let expire = s.expire;
         match (resources, checks) {
             (Some(res), Some(chk)) => iproduct!(res, chk).for_each(|(r, c)| {
@@ -295,8 +335,22 @@ impl SensuClient {
     }
 
     pub fn list(&mut self, s: ListOpts) -> Result<(), Box<dyn Error>> {
+        let compile_regex = |string: Option<&str>| -> Result<Regex, Box<dyn Error>> {
+            let regex = RegexBuilder::new(string.unwrap_or(".*")).size_limit(8192)
+                .dfa_size_limit(8192).build()?;
+            Ok(regex)
+        };
+
+        let sub_regex = compile_regex(s.sub.as_ref().map(|s| s.as_str()))?;
+        let chk_regex = compile_regex(s.chk.as_ref().map(|s| s.as_str()))?;
+
+        println!("Active silences:");
         let resp = self.request(Method::GET, SensuEndpoint::Silenced, None)?;
         if let Some(Value::Array(v)) = resp {
+            if v.len() == 0 {
+                println!("\tNo silences");
+                return Ok(());
+            }
             for obj in v {
                 if let Value::Object(o) = obj {
                     let user = o.get("creator").and_then(|c| c.as_str()).unwrap_or("unknown");
@@ -306,14 +360,18 @@ impl SensuClient {
                     let expire = o.get("expire").and_then(|c| c.as_u64());
                     let eor = o.get("expire_on_resolve").and_then(|c| c.as_bool()).unwrap_or(false);
 
-                    println!("subscription:\t\t{}", subscription);
-                    println!("Check:\t\t\t{}", check);
+                    if !sub_regex.is_match(subscription) || !chk_regex.is_match(check) {
+                        continue
+                    }
+
+                    println!("\tSubscription:\t\t{}", subscription);
+                    println!("\tCheck:\t\t\t{}", check);
                     match expire {
-                        Some(num) => println!("Expiration:\t\t{}", num),
-                        None => println!("Expiration:\t\tnever"),
+                        Some(num) => println!("\tExpiration:\t\t{}", num),
+                        None => println!("\tExpiration:\t\tnever"),
                     };
-                    println!("Expire on resolve:\t{}", eor);
-                    println!("User:\t\t\t{}", user);
+                    println!("\tExpire on resolve:\t{}", eor);
+                    println!("\tUser:\t\t\t{}", user);
                     println!();
                 }
             }
