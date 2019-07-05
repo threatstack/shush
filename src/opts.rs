@@ -214,7 +214,3 @@ impl<'a> Args<'a> {
         self.0.value_of(option).map(|st| st.split(",").map(|s| s.to_string()).collect())
     }
 }
-
-#[cfg(test)]
-mod test {
-}

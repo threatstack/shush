@@ -130,7 +130,6 @@
 
 extern crate clap;
 extern crate hyper;
-extern crate hyper_tls;
 extern crate regex;
 extern crate tokio;
 
@@ -139,7 +138,6 @@ extern crate serde_json;
 #[macro_use]
 extern crate itertools;
 extern crate ini;
-#[macro_use]
 extern crate nom;
 
 mod config;
@@ -167,32 +165,4 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         ShushOpts::List(l) => client.list(l)?,
     };
     Ok(())
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_filter_vec() {
-        let res = filter_vec(vec![json!({
-            "subscription": "asldAKHll",
-            "check": "9374982",
-            "expire": 200
-        }),
-        json!({
-            "subscription": "10alskd",
-            "check": "a2i1o4u",
-            "expire": 200
-        }),
-        json!({
-            "subscription": "******",
-            "check": "asdf",
-            "expire": 200
-        })], Some("^[a-zA-Z]+$".to_string()), Some("^[0-9]+$".to_string()));
-        assert_eq!(
-            res,
-            Some("Active silences:\n\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds".to_string())
-        );
-    }
 }
