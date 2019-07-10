@@ -128,182 +128,41 @@
 
 #![deny(missing_docs)]
 
-extern crate futures;
-extern crate regex;
-extern crate getopts;
+extern crate clap;
 extern crate hyper;
-extern crate hyper_tls;
-extern crate native_tls;
+extern crate regex;
 extern crate tokio;
 
-// Only need `json!()` macro for testing
-#[cfg(test)]
-#[macro_use]
-extern crate serde_json;
-#[cfg(not(test))]
 extern crate serde_json;
 
 #[macro_use]
 extern crate itertools;
 extern crate ini;
-#[macro_use]
 extern crate nom;
 
 mod config;
 mod err;
-mod json;
 mod opts;
 mod resources;
 mod sensu;
 
-use std::{env,process};
-
-use hyper::Method;
-use serde_json::{Value,Map};
+use std::error::Error;
 
 use opts::ShushOpts;
-use sensu::{SensuClient,SensuEndpoint};
-
-fn filter_vec(vec: Vec<serde_json::Value>, sub: Option<String>, chk: Option<String>) -> Option<String> {
-    let filter_closure = |map: &serde_json::Value, re: Result<&regex::Regex, &regex::Error>, key| -> bool {
-        match re {
-            Ok(r) => {
-                if let Some(Value::String(string)) = map.get(key) {
-                    r.is_match(string)
-                } else if let Some(Value::Null) = map.get(key) {
-                    true
-                } else {
-                    false
-                }
-            },
-            _ => {
-                println!("Invalid {} regex - defaulting to .*", key);
-                true
-            }
-        }
-    };
-    let re_sub = regex::RegexBuilder::new(sub.unwrap_or(".*".to_string()).as_str())
-        .size_limit(8192).dfa_size_limit(8192).build();
-    let re_chk = regex::RegexBuilder::new(chk.unwrap_or(".*".to_string()).as_str())
-        .size_limit(8192).dfa_size_limit(8192).build();
-    let mut acc_string = "Active silences:".to_string();
-    vec.iter().filter(|item| {
-        filter_closure(item, re_sub.as_ref(), "subscription")
-    })
-    .filter(|item| filter_closure(item, re_chk.as_ref(), "check"))
-    .fold(&mut acc_string, |acc, filtered_item| {
-        let sub_val = filtered_item.get("subscription")
-            .and_then(|json| json.as_str()).unwrap_or("all");
-        let chk_val = filtered_item.get("check")
-            .and_then(|json| json.as_str()).unwrap_or("all");
-        let seconds = filtered_item.get("expire")
-            .and_then(|json| json.as_i64()).unwrap_or(-1);
-        let on_resolve = filtered_item.get("expire_on_resolve")
-            .and_then(|json| json.as_bool()).unwrap_or(false);
-        let expiration = if seconds == -1 {
-            "never".to_string()
-        } else if on_resolve == true {
-            "on resolve".to_string()
-        } else {
-            format!("in {} seconds", seconds)
-        };
-        acc.push_str(format!("\n\n\tSubscription: {}\n\tCheck: {}\n\tExpires {}", sub_val, chk_val, expiration).as_str());
-        acc
-    });
-
-    Some(acc_string)
-}
-
-fn list_formatting(sensu_client: &mut SensuClient, sub: Option<String>, chk: Option<String>) -> Option<String> {
-    let uri = SensuEndpoint::Silenced.into();
-    match sensu_client.request::<String>(Method::GET, uri, None) {
-        Err(e) => {
-            println!("Couldn't gather active silences from API: {}", e);
-            None
-        },
-        Ok(Some(Value::Array(vec))) => filter_vec(vec, sub, chk),
-        _ => {
-            println!("Invalid response from API");
-            None
-        },
-    }
-}
-
-fn request_iter(sopts: ShushOpts, sclient: &mut SensuClient, method: Method,
-                endpoint: SensuEndpoint) {
-    let mapped = match sopts.map_and_validate(sclient) {
-        Ok(opts) => opts,
-        Err(e) => {
-            println!("{}", e);
-            process::exit(1);
-        }
-    };
-    println!("{}", mapped);
-    for pl in mapped {
-        let map: Map<String, Value> = pl.into();
-        let uri = endpoint.clone().into();
-        match sclient.request(method.clone(), uri, Some(Value::from(map))) {
-            Err(e) => {
-                println!("Error on POST request: {}", e);
-                process::exit(1);
-            },
-            _ => (),
-        };
-    }
-}
+use sensu::SensuClient;
 
 /// Main function - handle arg parsing and all executable actions
-pub fn main() {
-    let args: Vec<String> = env::args().collect();
-    let (shush_opts, shush_cfg) = opts::getopts(args);
-    let mut sensu_client = match SensuClient::new(shush_cfg.get("api").unwrap_or(String::new())) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("{}", e);
-            process::exit(1);
-        }
-    };
+pub fn main() -> Result<(), Box<dyn Error>> {
+    let shush_args = opts::Args::new();
+    let shush_opts = shush_args.getopts();
+    let shush_cfg = shush_args.getconf();
+    
+    let mut client = SensuClient::new(shush_cfg.get("api").unwrap_or(String::new()))?;
 
     match shush_opts {
-        ShushOpts::Silence { resource: _, checks: _, expire: _ } => {
-            request_iter(shush_opts, &mut sensu_client, Method::POST,
-                         SensuEndpoint::Silenced)
-        }
-        ShushOpts::Clear { resource: _, checks: _ } => {
-            request_iter(shush_opts, &mut sensu_client, Method::POST,
-                         SensuEndpoint::Clear)
-        },
-        ShushOpts::List { sub, chk } => {
-            println!("{}", list_formatting(&mut sensu_client, sub, chk)
-                     .unwrap_or("".to_string()));
-        },
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_filter_vec() {
-        let res = filter_vec(vec![json!({
-            "subscription": "asldAKHll",
-            "check": "9374982",
-            "expire": 200
-        }),
-        json!({
-            "subscription": "10alskd",
-            "check": "a2i1o4u",
-            "expire": 200
-        }),
-        json!({
-            "subscription": "******",
-            "check": "asdf",
-            "expire": 200
-        })], Some("^[a-zA-Z]+$".to_string()), Some("^[0-9]+$".to_string()));
-        assert_eq!(
-            res,
-            Some("Active silences:\n\n\tSubscription: asldAKHll\n\tCheck: 9374982\n\tExpires in 200 seconds".to_string())
-        );
-    }
+        ShushOpts::Silence(s) => client.silence(s)?,
+        ShushOpts::Clear(c) => client.clear(c)?,
+        ShushOpts::List(l) => client.list(l)?,
+    };
+    Ok(())
 }

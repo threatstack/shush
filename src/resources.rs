@@ -1,74 +1,54 @@
 use std::fmt::{self,Display};
 use std::vec;
 
-use sensu::SensuResource;
-
-/// Enum representing Shush target resource (AWS node, Sensu client, or subscription)
+/// Enum representing Shush target resource type (AWS node, Sensu client, or subscription)
 #[derive(PartialEq,Debug)]
-pub enum ShushResources {
+pub enum ShushResourceType {
     /// AWS node
-    Node(Vec<String>),
+    Node,
     /// Sensu client ID
-    Client(Vec<String>),
+    Client,
     /// Sensu subscription
-    Sub(Vec<String>),
+    Sub,
 }
 
-impl ShushResources {
-    pub fn is_client(&self) -> bool {
-        match *self {
-            ShushResources::Node(_) => false,
-            ShushResources::Client(_) => true,
-            ShushResources::Sub(_) => false,
-        }
-    }
+/// List of resources and the resource type
+#[derive(PartialEq,Debug)]
+pub struct ShushResources {
+    pub res_type: ShushResourceType,
+    pub resources: Vec<String>,
+}
 
-    pub fn retain<F>(&mut self, f: F) where F: FnMut(&String) -> bool {
-        match *self {
-            ShushResources::Node(_) => (),
-            ShushResources::Client(ref mut v) => v.retain(f),
-            ShushResources::Sub(ref mut v) => v.retain(f),
-        };
+impl IntoIterator for ShushResources {
+    type Item = String;
+    type IntoIter = ShushResourceIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ShushResourceIterator(self.resources.into_iter())
     }
 }
 
 impl Display for ShushResources {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ShushResources::Node(ref v) => write!(f, "Instance IDs: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-            ShushResources::Client(ref v) => write!(f, "Sensu clients: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-            ShushResources::Sub(ref v) => write!(f, "Subscriptions: {}", if v.len() > 0 {
-                v.join(", ")
-            } else {
-                return Err(fmt::Error);
-            }),
-        }
+        match self.res_type {
+            ShushResourceType::Node => write!(f, "Instance IDs: ")?,
+            ShushResourceType::Client => write!(f, "Sensu clients: ")?,
+            ShushResourceType::Sub => write!(f, "Subscriptions: ")?,
+        };
+        write!(f, "{}", if self.resources.len() > 0 {
+            self.resources.join(", ")
+        } else {
+            return Err(fmt::Error);
+        })
     }
 }
 
-impl IntoIterator for ShushResources {
-    type Item = SensuResource;
-    type IntoIter = vec::IntoIter<SensuResource>;
+pub struct ShushResourceIterator(vec::IntoIter<String>);
 
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            ShushResources::Client(vec) => vec.into_iter()
-                .map(SensuResource::Client)
-                .collect::<Vec<SensuResource>>().into_iter(),
-            ShushResources::Sub(vec) => vec.into_iter()
-                .map(SensuResource::Sub)
-                .collect::<Vec<SensuResource>>().into_iter(),
-            ShushResources::Node(_) => {
-                unimplemented!()
-            },
-        }
+impl Iterator for ShushResourceIterator {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
     }
 }

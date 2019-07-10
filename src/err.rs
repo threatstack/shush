@@ -18,16 +18,12 @@ impl SensuError {
         SensuError::Message(msg.to_string())
     }
 
-    pub fn not_found() -> Self {
-        SensuError::NotFound
+    pub fn new_string<F>(any_format: F) -> Self where F: Display {
+        SensuError::Message(format!("{}", any_format))
     }
 
-    pub fn is_404(&self) -> bool {
-        if let SensuError::Message(_) = self {
-            false
-        } else {
-            true
-        }
+    pub fn not_found() -> Self {
+        SensuError::NotFound
     }
 }
 

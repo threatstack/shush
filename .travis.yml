@@ -2,5 +2,5 @@ language: rust
 rust: stable
 
 script:
-  - cargo build
-  - cargo test
+  - cargo build --release
+  - cargo test --release
